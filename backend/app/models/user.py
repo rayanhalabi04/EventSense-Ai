@@ -9,8 +9,9 @@ from app.core.database import Base, TimestampMixin
 
 
 class UserRole(str, enum.Enum):
-    tenant_admin = "tenant_admin"
-    tenant_agent = "tenant_agent"
+    staff = "staff"
+    manager = "manager"
+    platform_admin = "platform_admin"
 
 
 class User(TimestampMixin, Base):
@@ -26,7 +27,7 @@ class User(TimestampMixin, Base):
     )
     email: Mapped[str] = mapped_column(String(320), nullable=False)
     hashed_password: Mapped[str] = mapped_column(String(255), nullable=False)
-    role: Mapped[UserRole] = mapped_column(Enum(UserRole), nullable=False)
+    role: Mapped[UserRole] = mapped_column(Enum(UserRole, name="user_role"), nullable=False)
     full_name: Mapped[str] = mapped_column(String(255), nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
 

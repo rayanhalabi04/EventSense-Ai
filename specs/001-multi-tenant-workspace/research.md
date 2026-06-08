@@ -1,127 +1,110 @@
 # Research: Multi-Tenant Workspace
 
-**Branch**: `001-multi-tenant-workspace` | **Phase**: 0 — Pre-design research
-
-All technical choices below are resolved from the provided stack (FastAPI + SQLAlchemy + PostgreSQL + pgvector + JWT). No `NEEDS CLARIFICATION` items remain.
+**Branch**: `001-multi-tenant-workspace` | **Phase**: 0 - Pre-design research
 
 ---
 
 ## Decision 1: Tenant Isolation Strategy
 
-**Decision**: Row-level isolation — every tenant-owned table carries a `tenant_id` UUID foreign key referencing the `tenants` table. All queries are filtered by `tenant_id` via a SQLAlchemy dependency injected at the service layer.
+**Decision**: Use a shared PostgreSQL schema. Every tenant-owned table added by current or future features carries a non-null `tenant_id` UUID foreign key referencing `tenants.id`.
 
 **Rationale**:
-- Fits naturally with a single PostgreSQL instance and SQLAlchemy ORM.
-- Avoids per-tenant schema creation complexity (schema-per-tenant requires dynamic connection routing or `SET search_path` manipulation, which is fragile with pgvector).
-- pgvector's `ivfflat` and `hnsw` indexes work across a shared table; a `WHERE tenant_id = :tid` pre-filter is supported and keeps the index warm for all tenants.
-- Alembic migrations apply once to the shared schema — simpler than maintaining per-tenant migration state.
+- Fits the senior-project MVP and provided FastAPI + SQLAlchemy + PostgreSQL stack.
+- Avoids schema-per-tenant or database-per-tenant operational overhead.
+- Keeps Alembic migrations straightforward.
+- Allows later pgvector/RAG tables to use the same tenant-filter pattern when those features are added.
 
 **Alternatives considered**:
-- Schema-per-tenant: stronger isolation, but pgvector index management per schema is operationally costly. Rejected for MVP.
-- Database-per-tenant: maximum isolation, but requires separate connection pools and Alembic migration runs per tenant. Rejected — overkill for two demo tenants.
+- Schema-per-tenant: stronger isolation but too much routing/migration complexity for MVP.
+- Database-per-tenant: strongest isolation but overkill for two demo tenants.
 
 ---
 
-## Decision 2: JWT Tenant Claim
+## Decision 2: JWT-Derived Tenant Context
 
-**Decision**: The JWT access token includes `tenant_id` (UUID) and `user_role` as first-class claims. FastAPI extracts these via a `get_current_tenant_context` dependency on every protected route. The backend never reads `tenant_id` from the request body or query parameters for authorization purposes.
+**Decision**: Protected routes and services use a `TenantContext` derived from a signed JWT/current authenticated user. The backend never trusts `tenant_id` from request bodies, query strings, or frontend state.
 
 **Rationale**:
-- Aligns with SR-01: session is the source of truth.
-- FastAPI's `Depends()` system makes it trivial to inject `TenantContext` (a dataclass carrying `tenant_id` + `user_id` + `role`) into every route handler.
-- JWT signing with a shared secret (HS256) or RS256 key ensures the claim cannot be forged by the client.
+- Prevents clients from choosing their tenant.
+- Keeps tenant scoping consistent across every feature.
+- Matches FastAPI dependency injection patterns.
 
-**How it works**:
-```
-POST /auth/token  →  JWT payload: { sub: user_id, tenant_id: uuid, role: "tenant_agent", exp: ... }
-Every API call    →  Depends(get_current_tenant_context) extracts tenant_id from token
-Service layer     →  Always appends .filter(Model.tenant_id == ctx.tenant_id)
-```
+**Implementation note**: Spec 001 defines the context contract; Spec 002 implements login, refresh, and full JWT issuance.
+
+---
+
+## Decision 3: Canonical Roles
+
+**Decision**: Use `staff`, `manager`, and `platform_admin` from the foundation onward.
+
+**Rationale**:
+- Matches the product workflow: staff handle daily messages; managers review higher-risk or administrative tenant work; platform admins operate the demo/platform layer.
+- Avoids fragile role-rename migrations later.
+- Makes platform-admin content restrictions explicit from the first feature.
+
+---
+
+## Decision 4: Tenant-Scoped Repository/Service Pattern
+
+**Decision**: Use an explicit `TenantScopedRepository` or service-layer helper for tenant-owned models.
+
+**Rationale**:
+- Avoids accidental unfiltered queries.
+- Is easier to test than magical SQLAlchemy event hooks.
+- Keeps service code honest: tenant-owned operations require `tenant_id`.
 
 **Alternatives considered**:
-- Lookup `tenant_id` from DB on every request using `user_id`: adds a DB round-trip per request; unnecessary since the claim is already in the token. Rejected.
+- PostgreSQL Row Level Security: useful hardening later, but not required for the MVP foundation.
+- SQLAlchemy event hooks: less explicit and harder to reason about in a senior-project codebase.
 
 ---
 
-## Decision 3: SQLAlchemy Tenant Filter Enforcement
+## Decision 5: Same-Tenant Relationship Validation
 
-**Decision**: A `TenantScopedRepository` base class (or mixin) wraps all SQLAlchemy query methods and automatically appends `.filter(Model.tenant_id == tenant_id)` before execution. Direct model queries outside this abstraction are disallowed in service code.
+**Decision**: Later features must validate same-tenant relationships at the service layer and cover them with integration tests.
 
 **Rationale**:
-- Prevents accidental unfiltered queries ("forgot to add `.filter`") from exposing cross-tenant data.
-- Centralises the enforcement point — audited in one place rather than scattered across every route.
-- SQLAlchemy 2.x's `select()` + `.where()` style makes this clean to wrap.
+- Composite foreign keys/check constraints can be added later, but service validation is practical for MVP.
+- It directly handles common leak risks such as a Tenant A message being attached to a Tenant B conversation.
 
-**Pattern**:
-```python
-class TenantRepo(Generic[T]):
-    def get(self, id: UUID, tenant_id: UUID) -> T | None:
-        return session.get(T, id, where=[T.tenant_id == tenant_id])
-
-    def list(self, tenant_id: UUID, **filters) -> list[T]:
-        q = select(T).where(T.tenant_id == tenant_id)
-        for k, v in filters.items():
-            q = q.where(getattr(T, k) == v)
-        return session.execute(q).scalars().all()
-```
-
-**Alternatives considered**:
-- PostgreSQL Row Level Security (RLS): excellent isolation guarantee, but requires `SET app.current_tenant_id` on every connection, complicating connection pool reuse. Deferred to post-MVP as an additional hardening layer.
-- SQLAlchemy event hooks (`before_execute`): more magical, harder to test. Rejected in favour of explicit repo wrapping.
+Examples:
+- message tenant matches conversation tenant
+- document chunk tenant matches document tenant
+- task assignee/creator/conversation tenants match task tenant
+- escalation and suggested reply references stay within one tenant
 
 ---
 
-## Decision 4: pgvector Tenant Filtering
+## Decision 6: Cross-Tenant Block/Audit Policy
 
-**Decision**: The `document_chunks` table includes a `tenant_id` UUID column. Every vector similarity search includes a `WHERE tenant_id = :tenant_id` clause **before** the `ORDER BY embedding <=> :query_vec LIMIT :k` clause. This is a pre-filter, not post-filter.
+**Decision**: Audit implementation is deferred, but the policy is defined now. When future audit logging exists, blocked cross-tenant attempts are logged under the actor/requesting user's tenant when available. Victim tenant content is not copied into response or audit detail.
 
 **Rationale**:
-- SR-05 mandates pre-filtering. Post-retrieval filtering (fetch top-K globally, then discard wrong-tenant results) would leak tenant chunk counts and degrade result quality for small tenants.
-- pgvector supports combined index scans with WHERE filters on indexed columns. Adding a B-tree index on `tenant_id` alongside the `ivfflat`/`hnsw` index is standard practice.
-- SQLAlchemy + pgvector (`pgvector-sqlalchemy`) allows expressing this as: `session.execute(select(DocumentChunk).where(DocumentChunk.tenant_id == tid).order_by(DocumentChunk.embedding.l2_distance(query_vec)).limit(k))`.
-
-**Index strategy**:
-- `CREATE INDEX ON document_chunks USING hnsw (embedding vector_cosine_ops)` — shared across all tenants (acceptable for MVP scale).
-- `CREATE INDEX ON document_chunks (tenant_id)` — B-tree for the pre-filter.
+- Gives managers visibility into suspicious behavior from their tenant users.
+- Avoids leaking victim tenant identifiers or content.
+- Leaves platform-wide security review for a later audit/security feature.
 
 ---
 
-## Decision 5: Audit Log Design
+## Decision 7: Demo Tenant Seeding
 
-**Decision**: A dedicated `audit_logs` table with append-only semantics enforced at the application layer. No `UPDATE` or `DELETE` statements are ever issued against this table. Rows are written by a shared `AuditService` called from route handlers and middleware.
-
-**Fields**: `id`, `tenant_id`, `actor_user_id`, `action`, `resource_type`, `resource_id`, `outcome` (allowed/blocked), `detail` (JSON), `ip_address`, `created_at`.
+**Decision**: Seed Elegant Weddings and Royal Events Agency with deterministic IDs and initial manager users. Optionally seed an EventSense Platform tenant for platform admins.
 
 **Rationale**:
-- Simpler than an event-streaming solution for MVP scale.
-- PostgreSQL's MVCC guarantees that concurrent audit writes don't block each other.
-- The `tenant_id` on every row allows Tenant Admins to read only their own logs (same `TenantRepo` pattern).
-- `created_at` has a `DEFAULT now()` and is never set by application code, preventing timestamp forgery.
-
-**Alternatives considered**:
-- Separate append-only audit database: stronger immutability guarantee, but operationally complex for MVP. Deferred.
-- Kafka / event stream: appropriate at scale, out of scope for MVP.
+- Makes tests and quickstarts deterministic.
+- Avoids relying on self-service signup, which is out of MVP scope.
 
 ---
 
-## Decision 6: Demo Tenant Seeding
-
-**Decision**: Two demo tenants (Elegant Weddings, Royal Events Agency) are created by an Alembic data migration (`versions/XXXX_seed_demo_tenants.py`) that runs at deployment time. Each tenant gets a deterministic UUID so tests can reference them.
-
-**Rationale**:
-- Alembic tracks whether the seed has run (via its version table), so it is idempotent.
-- Using fixed UUIDs (`uuid5(NAMESPACE_DNS, "elegant-weddings")` etc.) means tests and documentation can reference stable IDs without a lookup step.
-
----
-
-## Decision 7: Deferred Items (Not in This Feature)
+## Deferred Items
 
 | Item | Reason deferred |
-|------|----------------|
-| Redis caching | No cache layer needed until RAG and reply generation are implemented |
-| AI suggested replies | Depends on document ingestion pipeline (next feature) |
-| Document chunking pipeline | Separate feature; this feature only defines the `documents` and `document_chunks` schema |
-| Self-service tenant sign-up UI | Out of scope per spec |
-| PostgreSQL Row Level Security | Post-MVP hardening layer |
-| Per-tenant rate limiting | Out of scope per spec |
-| SSO / federated identity | Out of scope per spec |
+|------|-----------------|
+| Message simulator | Separate feature 003 |
+| Inbox | Separate feature 004 |
+| Documents and RAG/pgvector | Later document/RAG features |
+| Suggested replies | Later AI replies feature |
+| Tasks and escalations | Later workflow features |
+| Audit log table/API/UI | Later audit feature |
+| Guardrails and evaluation | Later AI quality features |
+| Billing, CRM, subscriptions | Out of MVP scope |

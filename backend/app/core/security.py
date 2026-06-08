@@ -32,8 +32,17 @@ def create_access_token(*, user_id: UUID, tenant_id: UUID, role: str) -> str:
     return jwt.encode(payload, settings.jwt_secret_key, algorithm=settings.jwt_algorithm)
 
 
-def decode_access_token(token: str) -> dict[str, str]:
+def decode_jwt(token: str) -> dict[str, str]:
     try:
-        return jwt.decode(token, settings.jwt_secret_key, algorithms=[settings.jwt_algorithm])
+        payload = jwt.decode(token, settings.jwt_secret_key, algorithms=[settings.jwt_algorithm])
     except JWTError as exc:
         raise ValueError("invalid token") from exc
+
+    required_claims = {"user_id", "tenant_id", "role"}
+    if not required_claims.issubset(payload):
+        raise ValueError("invalid token")
+    return payload
+
+
+def decode_access_token(token: str) -> dict[str, str]:
+    return decode_jwt(token)
