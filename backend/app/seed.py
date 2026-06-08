@@ -15,6 +15,7 @@ DEMO_TENANTS = [
         "email": "admin@elegant-weddings.demo",
         "password": "demo-password-1",
         "full_name": "Elegant Weddings Admin",
+        "role": UserRole.manager,
     },
     {
         "name": "Royal Events Agency",
@@ -22,6 +23,7 @@ DEMO_TENANTS = [
         "email": "admin@royal-events.demo",
         "password": "demo-password-2",
         "full_name": "Royal Events Agency Admin",
+        "role": UserRole.manager,
     },
 ]
 
@@ -46,7 +48,7 @@ async def seed_demo_data() -> None:
                         tenant_id=tenant.id,
                         email=item["email"],
                         hashed_password=hash_password(item["password"]),
-                        role=UserRole.tenant_admin,
+                        role=item["role"],
                         full_name=item["full_name"],
                     )
                 )

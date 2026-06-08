@@ -46,11 +46,11 @@ All technical choices below are resolved from the provided stack (FastAPI + SQLA
 
 | Spec 002 name | Enum value | Spec 001 placeholder | Description |
 |---------------|-----------|----------------------|-------------|
-| Staff | `staff` | `tenant_agent` | Day-to-day planner |
-| Manager | `manager` | `tenant_admin` | Senior / document manager |
-| Platform Admin | `platform_admin` | `super_admin` | Internal operator |
+| Staff | `staff` | `staff` | Day-to-day planner |
+| Manager | `manager` | `manager` | Senior / document manager |
+| Platform Admin | `platform_admin` | `platform_admin` | Internal operator |
 
-**Rationale**: The Spec 001 plan used provisional names (`tenant_agent`, `tenant_admin`, `super_admin`). Spec 002 finalises them as `staff`, `manager`, `platform_admin` — cleaner and domain-appropriate for a wedding/event agency product. The Alembic migration for the enum is part of Spec 002 (an `ALTER TYPE` migration that renames the values).
+**Rationale**: Spec 001 now starts with these canonical names, so Spec 002 does not need a role-rename migration. The names are domain-appropriate for a wedding/event agency product and keep later route guards straightforward.
 
 ---
 
@@ -87,7 +87,7 @@ All technical choices below are resolved from the provided stack (FastAPI + SQLA
 
 ## Decision 5: Role Permission Matrix
 
-**Decision**: Roles are mapped to route-level access using the `require_role()` dependency from Spec 001. The canonical permission matrix is:
+**Decision**: Roles are mapped to route-level access using the `require_role()` dependency from Spec 001. Spec 002 implements the auth and guard infrastructure only. The matrix below is the future route-policy target for later specs; it is not a list of APIs implemented by this feature.
 
 | Route category | Staff | Manager | Platform Admin |
 |----------------|-------|---------|----------------|
@@ -102,9 +102,8 @@ All technical choices below are resolved from the provided stack (FastAPI + SQLA
 | `GET /documents/{id}` | ✗ | ✓ | ✗ |
 | `GET /audit-logs` | ✗ | ✓ | ✗ |
 | `POST /escalations/{id}/resolve` | ✗ | ✓ | ✗ |
-| `POST /admin/tenants`, `GET /admin/tenants` | ✗ | ✗ | ✓ |
-| `PATCH /admin/tenants/{id}` (deactivate) | ✗ | ✗ | ✓ |
-| `GET /admin/audit-logs` (cross-tenant) | ✗ | ✗ | ✓ |
+| Existing platform metadata/admin routes, e.g. `GET /admin/tenants` | ✗ | ✗ | ✓ |
+| Future platform/demo administration routes | ✗ | ✗ | ✓ |
 
 **Note**: Manager inherits all Staff permissions. Platform Admin has no access to tenant content routes (conversations, messages, documents, tasks, escalations, suggested replies).
 
@@ -112,7 +111,7 @@ All technical choices below are resolved from the provided stack (FastAPI + SQLA
 
 ## Decision 6: Audit Events for Auth
 
-**Decision**: The following auth events are written to `audit_logs` via `AuditService.log()`:
+**Decision**: The following auth event names are defined now. They are emitted through auth event hooks if a hook exists; persistence is deferred to the later audit-log feature.
 
 | Event | `action` value | `outcome` | Notes |
 |-------|---------------|-----------|-------|
@@ -123,7 +122,7 @@ All technical choices below are resolved from the provided stack (FastAPI + SQLA
 | Platform Admin content access attempt | `platform_admin_content_attempt` | `blocked` | Subset of `insufficient_role` |
 | Token refresh | `token_refresh` | `allowed` | Optional for MVP; include for auditability |
 
-**Rationale**: Token expiry events (401 from expired token) are not individually audit-logged — the volume would be excessive and they provide no security signal beyond what login events already capture.
+**Rationale**: Token expiry events (401 from expired token) do not emit individual future-audit hooks — the volume would be excessive and they provide no security signal beyond what login events already capture.
 
 ---
 

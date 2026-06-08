@@ -10,5 +10,5 @@ class ForbiddenError(Exception):
 async def forbidden_error_handler(request: Request, exc: ForbiddenError) -> JSONResponse:
     return JSONResponse(
         status_code=status.HTTP_403_FORBIDDEN,
-        content={"detail": "forbidden", "code": exc.code},
+        content={"detail": "forbidden", "error_code": exc.code, "code": exc.code},
     )

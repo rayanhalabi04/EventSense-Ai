@@ -6,39 +6,26 @@
 
 ## Schema Changes from Spec 001
 
-This feature introduces **no new tables**. All required tables (`users`, `tenants`, `audit_logs`) were defined in Spec 001. This feature delivers:
+This feature introduces **no new tables**. Required foundation tables (`users`, `tenants`) were defined in Spec 001. Audit log storage is a later feature; this spec only names audit events for future integration. This feature delivers:
 
-1. A **role enum rename migration** — renames Spec 001's provisional enum values to the canonical names
-2. **Pydantic schemas** for request/response validation
-3. **JWT payload structure** (documented below)
-4. The **role permission matrix** enforced via FastAPI dependencies
+1. **Pydantic schemas** for request/response validation
+2. **JWT payload structure** (documented below)
+3. The **role permission matrix** enforced via FastAPI dependencies
+4. Demo staff/platform auth seed assumptions that use Spec 001 canonical roles
 
 ---
 
-## Alembic Migration
+## Role Enum
 
-### `0009_rename_user_roles`
+Spec 001 creates the canonical `user_role` enum:
 
-Rename the `user_role` PostgreSQL enum values to match the canonical names established by this feature:
-
-| Old value (Spec 001 placeholder) | New value (Spec 002 canonical) |
-|----------------------------------|-------------------------------|
-| `tenant_agent` | `staff` |
-| `tenant_admin` | `manager` |
-| `super_admin` | `platform_admin` |
-
-```sql
--- PostgreSQL does not support ALTER TYPE ... RENAME VALUE directly in older versions.
--- Use a sequence of ALTER TYPE ... ADD VALUE + UPDATE + ALTER TYPE ... RENAME VALUE (PG 15+)
--- or drop-and-recreate with a temporary column approach for earlier versions.
--- Alembic migration handles this with raw SQL.
-
-ALTER TYPE user_role RENAME VALUE 'tenant_agent' TO 'staff';
-ALTER TYPE user_role RENAME VALUE 'tenant_admin' TO 'manager';
-ALTER TYPE user_role RENAME VALUE 'super_admin' TO 'platform_admin';
+```text
+staff
+manager
+platform_admin
 ```
 
-**Seed data update** (same migration): Update the two demo tenant admin users from `tenant_admin` → `manager`.
+Spec 002 must not add a role-rename migration. It only uses these existing values for JWT claims and route guards.
 
 ---
 
@@ -52,9 +39,7 @@ Header:  { "alg": "HS256", "typ": "JWT" }
 Payload: {
   "sub":       "<user_id>",         # UUID string — user identity
   "tenant_id": "<tenant_id>",       # UUID string — tenant context (read-only by client)
-  "role":      "staff"              # | "manager" | "platform_admin"
-               | "manager"
-               | "platform_admin",
+  "role":      "staff",             # "staff" | "manager" | "platform_admin"
   "exp":       1748995200,          # Unix timestamp — token expiry (now + 60 min)
   "iat":       1748991600,          # Unix timestamp — issued at
   "jti":       "<uuid>"             # Unique token ID (for future revocation)
@@ -109,36 +94,26 @@ class UserResponse(BaseModel):
 
 ## Role → Permission Mapping (enforced via `require_role`)
 
-The `require_role(*roles)` dependency from Spec 001 is called at route definition. The mapping below is the authoritative permission table for this feature.
+The `require_role(*roles)` dependency from Spec 001 is called at route definition. The implemented routes in Spec 002 are auth routes only. Tenant content, documents, RAG, suggested replies, tasks, escalations, and audit logs are future features; their rows below are role-policy examples for later specs, not APIs implemented here.
 
-### Content routes (tenant-scoped, Spec 001)
-
-| Route | Required roles |
-|-------|---------------|
-| `GET /api/v1/conversations` | `staff`, `manager` |
-| `POST /api/v1/conversations` | `staff`, `manager` |
-| `GET /api/v1/conversations/{id}` | `staff`, `manager` |
-| `POST /api/v1/conversations/{id}/messages` | `staff`, `manager` |
-| `POST /api/v1/conversations/{id}/escalate` | `staff`, `manager` |
-| `GET /api/v1/tasks` | `staff`, `manager` |
-| `POST /api/v1/tasks` | `staff`, `manager` |
-| `PATCH /api/v1/tasks/{id}` | `staff`, `manager` |
-| `GET /api/v1/suggested-replies` | `staff`, `manager` |
-| `PATCH /api/v1/suggested-replies/{id}` | `staff`, `manager` |
-| `POST /api/v1/documents` | `manager` only |
-| `GET /api/v1/documents` | `manager` only |
-| `GET /api/v1/documents/{id}` | `manager` only |
-| `GET /api/v1/audit-logs` | `manager` only |
-| `POST /api/v1/escalations/{id}/resolve` | `manager` only |
-
-### Admin routes (platform-level, Spec 001)
+### Tenant content route policy examples
 
 | Route | Required roles |
 |-------|---------------|
-| `POST /api/v1/admin/tenants` | `platform_admin` only |
-| `GET /api/v1/admin/tenants` | `platform_admin` only |
-| `PATCH /api/v1/admin/tenants/{id}` | `platform_admin` only |
-| `GET /api/v1/admin/audit-logs` | `platform_admin` only |
+| Current tenant content routes from Specs 003+ | `staff`, `manager` |
+| Future message detail / suggested reply review routes | `staff`, `manager` |
+| Future task creation/status routes | `staff`, `manager` |
+| Future staff-initiated escalation creation routes | `staff`, `manager` |
+| Future document and RAG-management routes | `manager` only |
+| Future audit-log review routes | `manager` only |
+| Future escalation resolution routes | `manager` only |
+
+### Platform/admin route policy examples
+
+| Route | Required roles |
+|-------|---------------|
+| Existing Spec 001 platform tenant metadata route, e.g. `GET /api/v1/admin/tenants` | `platform_admin` only |
+| Future platform/demo administration routes | `platform_admin` only |
 
 ### Auth routes (this feature — no auth required)
 
@@ -146,7 +121,7 @@ The `require_role(*roles)` dependency from Spec 001 is called at route definitio
 |-------|--------------|
 | `POST /auth/token` | No — this IS the login |
 | `POST /auth/refresh` | Yes — valid (non-expired) token required |
-| `POST /auth/logout` | Yes — for audit logging; effectively always succeeds |
+| `POST /auth/logout` | Yes — emits future-audit hook if available; effectively always succeeds |
 | `GET /auth/me` | Yes — returns current user info |
 
 ---
@@ -183,8 +158,8 @@ Protected routes use a `<ProtectedRoute>` wrapper component:
 ```
 /login                     → Public (no auth required)
 /dashboard                 → ProtectedRoute (any authenticated user)
-/documents                 → ProtectedRoute + RoleGuard(["manager"])
-/audit-logs                → ProtectedRoute + RoleGuard(["manager"])
+/documents                 → Future policy example: ProtectedRoute + RoleGuard(["manager"])
+/audit-logs                → Future policy example: ProtectedRoute + RoleGuard(["manager"])
 /admin/tenants             → ProtectedRoute + RoleGuard(["platform_admin"])
 ```
 

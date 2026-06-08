@@ -31,4 +31,4 @@
 
 ## Notes
 
-All items pass. Spec is ready for `/speckit-plan`.
+All items pass after cleanup. Spec 002 is bounded to authentication, JWT-derived tenant context, role guards, active user/tenant checks, refresh behavior, and future-audit event hooks. Later workflows such as documents, RAG, tasks, escalations, audit-log persistence, guardrails, and evaluation remain out of scope.

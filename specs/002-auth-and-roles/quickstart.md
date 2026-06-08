@@ -15,11 +15,11 @@ This guide covers how to test the auth layer locally against the demo tenants se
 
 ---
 
-## Apply the Role-Rename Migration
+## Verify Canonical Roles
 
 ```bash
 cd backend
-alembic upgrade head   # applies migration 0009_rename_user_roles
+alembic upgrade head
 ```
 
 Verify:
@@ -36,6 +36,7 @@ psql $DATABASE_URL -c "SELECT unnest(enum_range(NULL::user_role));"
 |--------|-------|----------|------|
 | Elegant Weddings | admin@elegant-weddings.demo | demo-password-1 | manager |
 | Royal Events Agency | admin@royal-events.demo | demo-password-2 | manager |
+| Platform/System | platform-admin@eventsense.demo | platform-password | platform_admin |
 
 Seed additional Staff users by running:
 ```bash
@@ -90,15 +91,25 @@ STAFF_TOKEN=$(curl -s -X POST http://localhost:8000/auth/token \
   -d '{"email":"staff@elegant-weddings.demo","password":"staff-password-1","tenant_slug":"elegant-weddings"}' \
   | jq -r .access_token)
 
-# Staff cannot access audit log
-curl -s http://localhost:8000/api/v1/audit-logs \
-  -H "Authorization: Bearer $STAFF_TOKEN" | jq .error_code
-# Expected: "INSUFFICIENT_ROLE"
-
 # Staff CAN access conversations
 curl -s http://localhost:8000/api/v1/conversations \
   -H "Authorization: Bearer $STAFF_TOKEN" | jq .total
 # Expected: 0 (empty) or a number
+```
+
+Manager-only routes such as document management, escalation resolution, and audit-log review are future features. Until one exists in the current codebase, validate Manager-only role policy through the integration tests described in `tasks.md`.
+
+```bash
+# Login as Platform Admin using the platform/system tenant slug from Spec 001
+PLATFORM_TOKEN=$(curl -s -X POST http://localhost:8000/auth/token \
+  -H "Content-Type: application/json" \
+  -d '{"email":"platform-admin@eventsense.demo","password":"platform-password","tenant_slug":"platform"}' \
+  | jq -r .access_token)
+
+# Platform Admin cannot access tenant content
+curl -s http://localhost:8000/api/v1/conversations \
+  -H "Authorization: Bearer $PLATFORM_TOKEN" | jq .error_code
+# Expected: "INSUFFICIENT_ROLE"
 ```
 
 ---
@@ -138,8 +149,6 @@ backend/
 │   └── schemas/
 │       ├── auth.py                # LoginRequest, TokenResponse, TokenData
 │       └── user.py                # UserResponse
-├── alembic/versions/
-│   └── 0009_rename_user_roles.py  # Role enum rename migration
 └── tests/
     ├── integration/
     │   ├── test_auth.py           # Login, 401, expiry, refresh tests

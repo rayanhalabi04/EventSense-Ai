@@ -3,9 +3,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.conversations import get_tenant_conversation_or_403
 from app.core.database import get_async_session
-from app.core.tenant_context import TenantContext, get_current_tenant_context
+from app.core.tenant_context import TenantContext, require_role
 from app.models.conversation import Conversation
 from app.models.message import Message, MessageDirection
+from app.models.user import UserRole
 from app.schemas.simulator import SimulatedWhatsAppMessageCreate, SimulatedWhatsAppMessageRead
 
 
@@ -17,7 +18,7 @@ WHATSAPP_SIMULATOR_SOURCE = "whatsapp_simulator"
 @router.post("/messages", response_model=SimulatedWhatsAppMessageRead, status_code=status.HTTP_201_CREATED)
 async def simulate_whatsapp_message(
     payload: SimulatedWhatsAppMessageCreate,
-    ctx: TenantContext = Depends(get_current_tenant_context),
+    ctx: TenantContext = Depends(require_role(UserRole.staff, UserRole.manager)),
     session: AsyncSession = Depends(get_async_session),
 ) -> dict[str, Conversation | Message]:
     if payload.conversation_id is not None:

@@ -4,13 +4,13 @@
 
 **Input**: Feature specification from `specs/002-auth-and-roles/spec.md`
 
-**Depends on**: [Spec 001 — Multi-Tenant Workspace](../001-multi-tenant-workspace/plan.md) — users table, tenants table, audit_logs table, AuditService, TenantContext dependency, require_role dependency
+**Depends on**: [Spec 001 — Multi-Tenant Workspace](../001-multi-tenant-workspace/plan.md) — `users`, `tenants`, canonical roles, `TenantContext`, and `require_role` contract
 
 ---
 
 ## Summary
 
-Implement the email/password login flow, JWT issuance, and role-based access enforcement for EventSense AI. A signed token containing `user_id`, `tenant_id`, and `role` is issued on every successful login. Backend dependencies (`get_current_tenant_context`, `require_role`) — stubbed in Spec 001 — are now fully wired. The `UserRole` enum values are renamed to their canonical forms (`staff`, `manager`, `platform_admin`). Frontend `AuthContext`, `ProtectedRoute`, and `RoleGuard` components guard all pages. Audit events are written for login success, login failure, role violations, and token refresh.
+Implement the email/password login flow, JWT issuance, and role-based access enforcement for EventSense AI. A signed token containing `user_id`, `tenant_id`, and `role` is issued on every successful login. Backend dependencies (`get_current_tenant_context`, `require_role`) from Spec 001 are now fully wired. Canonical roles are already `staff`, `manager`, and `platform_admin`; no role-rename migration is needed. Frontend `AuthContext`, `ProtectedRoute`, and `RoleGuard` components guard authenticated pages. Auth event hooks are emitted for login success, login failure, role violations, token refresh, and logout; persistence is deferred to the later audit-log feature.
 
 ---
 
@@ -22,7 +22,7 @@ Implement the email/password login flow, JWT issuance, and role-based access enf
 - Backend: FastAPI, SQLAlchemy 2.x, Alembic, python-jose[cryptography] (JWT), passlib[bcrypt] (password hashing), pydantic[email] (email validation)
 - Frontend: React 18, Vite 5, Tailwind CSS, shadcn/ui, axios, jwt-decode
 
-**Storage**: PostgreSQL 15 — no new tables; adds one Alembic migration (role enum rename + seed update)
+**Storage**: PostgreSQL 15 — no new tables and no role-rename migration; may add a staff-user seed script for demos
 
 **Testing**: pytest + pytest-asyncio (backend), Vitest (frontend)
 
@@ -35,8 +35,9 @@ Implement the email/password login flow, JWT issuance, and role-based access enf
 **Constraints**:
 - `tenant_id` and `role` must come from the signed JWT only — never from request body or query string
 - Expired tokens return 401; insufficient role returns 403
-- Audit log writes are synchronous and append-only (Spec 001 `AuditService` pattern)
+- Auth routes define audit event names now; persistence is deferred to the later audit-log feature
 - Token lifetime: access token 60 minutes; no separate refresh token for MVP
+- `/auth/refresh` must re-check that the user and tenant are still active before issuing a new token
 
 **Scale/Scope**: Two demo tenants, two roles per tenant (manager + staff), one platform admin for MVP.
 
@@ -56,7 +57,7 @@ Constitution file is a blank template (not yet ratified). No governance gates ap
 specs/002-auth-and-roles/
 ├── plan.md              # This file
 ├── research.md          # Phase 0: 8 design decisions
-├── data-model.md        # Phase 1: JWT structure, role enum rename, Pydantic schemas, permission matrix
+├── data-model.md        # Phase 1: JWT structure, Pydantic schemas, permission matrix
 ├── quickstart.md        # Phase 1: local setup + curl test guide
 ├── contracts/
 │   └── api-contracts.md # Phase 1: auth endpoint contracts + role enforcement table
@@ -78,8 +79,6 @@ backend/
 │   └── schemas/
 │       ├── auth.py                # NEW: LoginRequest, TokenResponse, TokenData
 │       └── user.py                # NEW: UserResponse
-├── alembic/versions/
-│   └── 0009_rename_user_roles.py  # NEW: ALTER TYPE user_role RENAME VALUE ...
 ├── scripts/
 │   └── seed_staff_users.py        # NEW: staff users for both demo tenants
 └── tests/
@@ -123,11 +122,11 @@ frontend/src/api/client.ts          # ADD: Axios 401 interceptor → clear token
 | `security.py` | `create_access_token`, `verify_password`, `hash_password`, `decode_jwt`, `is_token_expired` |
 | `get_current_tenant_context` | Wired to `decode_jwt`; completes the stub from Spec 001 |
 | `require_role(*roles)` | Fully implemented; completes the stub from Spec 001 |
-| `POST /auth/token` | Login — validates credentials, resolves tenant from slug, issues JWT, audit logs |
+| `POST /auth/token` | Login — validates credentials, resolves tenant from slug, issues JWT, emits future-audit hook |
 | `POST /auth/refresh` | Issues a new token for a still-valid token |
-| `POST /auth/logout` | Audit logs logout; returns 200; client clears token |
+| `POST /auth/logout` | Emits future-audit hook if available; returns 200; client clears token |
 | `GET /auth/me` | Returns current user profile from DB |
-| Role enum rename | Migration `0009` renames values to `staff`, `manager`, `platform_admin` |
+| Role model | Uses canonical Spec 001 roles: `staff`, `manager`, `platform_admin` |
 | Pydantic schemas | `LoginRequest`, `TokenResponse`, `TokenData`, `UserResponse` |
 | Staff seed users | `seed_staff_users.py` for both demo tenants |
 | `AuthContext` + `useAuth` | Token store, decoded claims, `isAuthenticated`, login/logout actions |
@@ -138,7 +137,7 @@ frontend/src/api/client.ts          # ADD: Axios 401 interceptor → clear token
 | Axios 401 interceptor | Clears token + redirects to `/login` on any 401 |
 | Auth integration tests | `test_auth.py` (14 tests) + `test_roles.py` (9 tests) |
 | Security unit tests | `test_security.py` (7 tests) |
-| Audit logging | login_success, login_failure, login_failure_inactive, insufficient_role, token_refresh, logout |
+| Auth event hooks | login_success, login_failure, login_failure_inactive, insufficient_role, token_refresh, logout; no audit persistence in Spec 002 |
 
 ---
 
@@ -163,20 +162,20 @@ frontend/src/api/client.ts          # ADD: Axios 401 interceptor → clear token
 POST /auth/token  { email, password, tenant_slug }
   │
   ├─ 1. Resolve tenant:  SELECT FROM tenants WHERE slug=:slug AND is_active=true
-  │       → Not found → 401 INVALID_CREDENTIALS + audit(login_failure)
+  │       → Not found → 401 INVALID_CREDENTIALS + event(login_failure)
   │
   ├─ 2. Resolve user:    SELECT FROM users WHERE email=:email AND tenant_id=:tid
-  │       → Not found → 401 INVALID_CREDENTIALS + audit(login_failure)
+  │       → Not found → 401 INVALID_CREDENTIALS + event(login_failure)
   │
   ├─ 3. Check active:    user.is_active AND tenant.is_active
-  │       → Inactive → 401 INVALID_CREDENTIALS + audit(login_failure_inactive)
+  │       → Inactive → 401 INVALID_CREDENTIALS + event(login_failure_inactive)
   │
   ├─ 4. Verify password: passlib.verify(plain, user.hashed_password)
-  │       → Wrong → 401 INVALID_CREDENTIALS + audit(login_failure)
+  │       → Wrong → 401 INVALID_CREDENTIALS + event(login_failure)
   │
   ├─ 5. Issue token:     create_access_token(sub=user.id, tenant_id, role, exp=now+3600, jti=uuid())
   │
-  ├─ 6. Audit log:       AuditService.log(tenant_id, login_success, allowed, actor=user.id, ip=req.client.host)
+  ├─ 6. Audit event:     record/emit login_success if audit infrastructure exists
   │
   └─ 7. Return:          { access_token, token_type: "bearer", expires_in: 3600 }
 ```
@@ -196,7 +195,7 @@ Authorization: Bearer <token>
   TenantContext(tenant_id=payload.tenant_id, user_id=payload.sub, role=payload.role)
   │
   If route uses require_role("manager"):
-    ctx.role not in ["manager"] → 403 INSUFFICIENT_ROLE + audit(insufficient_role)
+    ctx.role not in ["manager"] → 403 INSUFFICIENT_ROLE + event(insufficient_role)
   │
   Handler executes; all DB queries use ctx.tenant_id
 ```
@@ -211,10 +210,10 @@ Authorization: Bearer <token>
 def require_role(*allowed_roles: UserRole):
     def dependency(ctx: TenantContext = Depends(get_current_tenant_context)):
         if ctx.role not in allowed_roles:
-            audit_service.log(
+            emit_auth_event_if_available(
+                action="insufficient_role",
+                outcome="blocked",
                 tenant_id=ctx.tenant_id,
-                action=AuditAction.insufficient_role,
-                outcome=AuditOutcome.blocked,
                 actor_user_id=ctx.user_id,
                 detail={"required": [r.value for r in allowed_roles], "actual": ctx.role.value},
             )
@@ -233,14 +232,15 @@ Route usage:
 async def list_conversations(ctx = Depends(require_role(UserRole.staff, UserRole.manager))):
     ...
 
-# Manager only
-@router.get("/audit-logs")
-async def get_audit_logs(ctx = Depends(require_role(UserRole.manager))):
+# Future manager-only routes such as documents, audit logs, escalation resolution,
+# and RAG-management routes use the same policy when those specs implement them.
+@router.get("/manager-policy-example")
+async def manager_policy_example(ctx = Depends(require_role(UserRole.manager))):
     ...
 
-# Platform Admin only
-@router.post("/admin/tenants")
-async def provision_tenant(ctx = Depends(require_role(UserRole.platform_admin))):
+# Existing platform/demo metadata routes use platform_admin only.
+@router.get("/admin/tenants")
+async def list_tenants(ctx = Depends(require_role(UserRole.platform_admin))):
     ...
 ```
 
@@ -262,9 +262,9 @@ async def provision_tenant(ctx = Depends(require_role(UserRole.platform_admin)))
 
 ---
 
-## Audit Logging Hooks
+## Future Audit Event Hooks
 
-New `AuditAction` constants added to `backend/app/services/audit_service.py`:
+Auth event constants are defined now. They are emitted/called through a lightweight auth-layer hook if such a hook exists, but Spec 002 does not create an audit-log table, audit API, or audit UI. Persistence is completed by the later audit-log feature.
 
 | Constant | Trigger |
 |----------|---------|
@@ -294,23 +294,22 @@ New `AuditAction` constants added to `backend/app/services/audit_service.py`:
 | `test_tampered_token_returns_401` | US2 AC-04 |
 | `test_token_refresh_returns_new_token_same_claims` | AC-11 |
 | `test_token_refresh_with_expired_token_returns_401` | AC-08 |
-| `test_logout_returns_200_and_writes_audit_log` | SR-06 |
+| `test_logout_returns_200_and_emits_event_if_available` | SR-06 |
 | `test_get_me_returns_correct_user_profile` | contract |
-| `test_login_failure_writes_audit_log_entry` | AC-09 |
+| `test_login_failure_emits_event_if_available` | AC-09 |
 | `test_body_tenant_id_ignored_session_value_used` | AC-12 |
 
 ### `tests/integration/test_roles.py` (9 tests → AC-05 through AC-10)
 
 | Test | Acceptance Criterion |
 |------|---------------------|
-| `test_staff_cannot_access_audit_logs_returns_403` | AC-05 |
-| `test_staff_cannot_upload_documents_returns_403` | AC-05 |
-| `test_manager_can_access_audit_logs` | AC-06 |
+| `test_staff_cannot_access_manager_only_route_returns_403` | AC-05 |
+| `test_manager_can_access_manager_only_route` | AC-06 |
 | `test_manager_can_access_conversations` | AC-06 |
 | `test_platform_admin_cannot_access_conversations` | AC-07 |
-| `test_platform_admin_cannot_access_documents` | AC-07 |
-| `test_platform_admin_can_provision_tenant` | US5 |
-| `test_role_violation_writes_audit_log_with_required_and_actual_role` | AC-10 |
+| `test_platform_admin_cannot_access_tenant_content_route` | AC-07 |
+| `test_platform_admin_can_access_existing_admin_tenants_metadata` | US5 |
+| `test_role_violation_emits_event_with_required_and_actual_role_if_available` | AC-10 |
 | `test_insufficient_role_response_contains_error_code` | contract |
 
 ### `tests/unit/test_security.py` (7 tests)

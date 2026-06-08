@@ -41,18 +41,18 @@ Login. Issues a signed access token.
 | 401 | Tenant is inactive | `{ "detail": "Invalid credentials", "error_code": "INVALID_CREDENTIALS" }` |
 | 422 | Missing or malformed fields | Standard FastAPI validation error |
 
-**Audit log**: Written on every call with outcome `allowed` (success) or `blocked` (failure). Fields: `action`, `outcome`, `ip_address`, `detail.email`, `detail.tenant_slug`. No password is logged.
+**Future audit event hook**: Emit/call an auth event hook on every login attempt with outcome `allowed` (success) or `blocked` (failure). Suggested fields: `action`, `outcome`, `ip_address`, `detail.email`, `detail.tenant_slug`. No password is logged. Persistence is added only when the later audit-log feature exists.
 
 **Security notes**:
 - Generic error message prevents email enumeration
 - `tenant_id` is **never** accepted as a body field — resolved from `tenant_slug` server-side
-- Password field is consumed and not stored in any log, trace, or audit record
+- Password field is consumed and not stored in any log, trace, audit event, or future audit record
 
 ---
 
 ### `POST /auth/refresh`
 
-Exchange a still-valid access token for a new one with a reset expiry. The token must not be expired.
+Exchange a still-valid access token for a new one with a reset expiry. The token must not be expired, and the backend must re-check that the user and tenant are still active before issuing a new token.
 
 **Auth**: Bearer token (valid, non-expired).
 
@@ -71,17 +71,17 @@ Exchange a still-valid access token for a new one with a reset expiry. The token
 
 | Status | Condition |
 |--------|-----------|
-| 401 | Token is missing, invalid, or expired |
+| 401 | Token is missing, invalid, expired, user inactive, tenant inactive, or user/tenant no longer exists |
 
-**Audit log**: `action=token_refresh`, `outcome=allowed`, `user_id`, `tenant_id`.
+**Future audit event hook**: `action=token_refresh`, `outcome=allowed`, `user_id`, `tenant_id`.
 
-**Notes**: The same `user_id`, `tenant_id`, and `role` claims are carried forward — no re-lookup against the database. If the user's role changed since the token was issued, the new token will not reflect the change until the next login.
+**Notes**: The same `user_id`, `tenant_id`, and `role` claims are carried forward after the active user/tenant check. If the user's role changed since the token was issued, the new token will not reflect the change until the next login.
 
 ---
 
 ### `POST /auth/logout`
 
-Signals a logout. For MVP, this is a client-initiated action — the server has no session state to destroy. The endpoint exists to write an audit log entry and return a clean 200.
+Signals a logout. For MVP, this is a client-initiated action — the server has no session state to destroy. The endpoint exists to return a clean 200 and optionally emit a future-audit logout event.
 
 **Auth**: Bearer token (any valid token).
 
@@ -92,7 +92,7 @@ Signals a logout. For MVP, this is a client-initiated action — the server has 
 { "message": "Logged out" }
 ```
 
-**Audit log**: `action=logout`, `outcome=allowed`, `user_id`, `tenant_id`.
+**Future audit event hook**: `action=logout`, `outcome=allowed`, `user_id`, `tenant_id`.
 
 **Notes**: The frontend clears the token from `sessionStorage` and React state after receiving 200. There is no server-side token revocation in the MVP.
 
@@ -126,14 +126,14 @@ Returns the current authenticated user's profile, decoded from the token.
 
 These rules apply to all routes in the system (Spec 001 + Spec 002):
 
-| Scenario | HTTP Status | `error_code` | Audit log written |
-|----------|-------------|--------------|-------------------|
+| Scenario | HTTP Status | `error_code` | Future audit event hook |
+|----------|-------------|--------------|-------------------------|
 | No `Authorization` header | 401 | `MISSING_TOKEN` | No |
 | Malformed or unsigned token | 401 | `INVALID_TOKEN` | No |
 | Valid token, but expired | 401 | `TOKEN_EXPIRED` | No |
-| Valid token, role insufficient for route | 403 | `INSUFFICIENT_ROLE` | Yes — `action=insufficient_role` |
-| Valid token, resource belongs to different tenant | 403 | `CROSS_TENANT_ACCESS` | Yes — `action=cross_tenant_access_attempt` |
-| Valid Platform Admin token on content route | 403 | `INSUFFICIENT_ROLE` | Yes — `action=platform_admin_content_attempt` |
+| Valid token, role insufficient for route | 403 | `INSUFFICIENT_ROLE` | Yes — `action=insufficient_role` if audit integration exists |
+| Valid token, resource belongs to different tenant | 403 | `CROSS_TENANT_ACCESS` | Yes — `action=cross_tenant_access_attempt` if audit integration exists |
+| Valid Platform Admin token on content route | 403 | `INSUFFICIENT_ROLE` | Yes — `action=platform_admin_content_attempt` if audit integration exists |
 
 **Error response shape** (all errors):
 ```json
@@ -145,18 +145,18 @@ These rules apply to all routes in the system (Spec 001 + Spec 002):
 
 ---
 
-## Frontend Route → Role Mapping
+## Frontend Route → Role Policy Examples
 
-Documented here so frontend routing logic and backend guards stay in sync.
+Documented here so frontend routing logic and backend guards stay in sync. Routes for tasks, documents, audit logs, escalations, RAG, and suggested replies are future policy examples only; Spec 002 does not implement those feature APIs.
 
 | Frontend path | Auth required | Allowed roles | Redirect on failure |
 |---------------|--------------|--------------|---------------------|
 | `/login` | No | — | — |
 | `/dashboard` | Yes | `staff`, `manager` | → `/login` if unauthenticated |
 | `/conversations` | Yes | `staff`, `manager` | → `/login` if unauth; 403 page if wrong role |
-| `/tasks` | Yes | `staff`, `manager` | → `/login` |
-| `/documents` | Yes | `manager` | 403 page |
-| `/audit-logs` | Yes | `manager` | 403 page |
+| `/tasks` | Future example | `staff`, `manager` | → `/login` |
+| `/documents` | Future example | `manager` | 403 page |
+| `/audit-logs` | Future example | `manager` | 403 page |
 | `/admin/tenants` | Yes | `platform_admin` | 403 page |
 
 ---

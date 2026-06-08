@@ -6,8 +6,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.conversations import get_tenant_conversation_or_403
 from app.core.database import get_async_session
-from app.core.tenant_context import TenantContext, get_current_tenant_context
+from app.core.tenant_context import TenantContext, require_role
 from app.models.message import Message, MessageDirection
+from app.models.user import UserRole
 from app.schemas.message import MessageCreate, MessageRead
 
 
@@ -18,7 +19,7 @@ router = APIRouter()
 async def create_message(
     conversation_id: UUID,
     payload: MessageCreate,
-    ctx: TenantContext = Depends(get_current_tenant_context),
+    ctx: TenantContext = Depends(require_role(UserRole.staff, UserRole.manager)),
     session: AsyncSession = Depends(get_async_session),
 ) -> Message:
     await get_tenant_conversation_or_403(conversation_id, ctx, session)
@@ -40,7 +41,7 @@ async def create_message(
 @router.get("/{conversation_id}/messages", response_model=list[MessageRead])
 async def list_messages(
     conversation_id: UUID,
-    ctx: TenantContext = Depends(get_current_tenant_context),
+    ctx: TenantContext = Depends(require_role(UserRole.staff, UserRole.manager)),
     session: AsyncSession = Depends(get_async_session),
 ) -> list[Message]:
     await get_tenant_conversation_or_403(conversation_id, ctx, session)
