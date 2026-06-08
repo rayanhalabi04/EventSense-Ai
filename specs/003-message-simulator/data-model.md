@@ -6,24 +6,26 @@
 
 ## Schema Changes from Spec 001
 
-This feature introduces **one schema change**: a `status` column on the existing `messages` table. No new tables are created.
+This feature introduces the basic `conversations` and `messages` tenant-owned tables if they do not already exist, plus a `status` column on `messages`. Spec 001 defines the tenant foundation only; the simulator is the first feature that needs message data.
 
 ---
 
 ## Alembic Migration
 
-### `0010_add_message_status`
+### `0010_create_conversations_messages`
 
-Add `MessageStatus` enum and `status` column to `messages`:
+Create the minimum conversation/message schema needed by the simulator and inbox:
 
 ```sql
 CREATE TYPE message_status AS ENUM ('unread', 'read');
+CREATE TYPE conversation_status AS ENUM ('open', 'closed', 'escalated');
+CREATE TYPE message_direction AS ENUM ('inbound', 'outbound');
 
-ALTER TABLE messages
-  ADD COLUMN status message_status NOT NULL DEFAULT 'unread';
+CREATE TABLE conversations (... tenant_id UUID NOT NULL REFERENCES tenants(id), ...);
+CREATE TABLE messages (... tenant_id UUID NOT NULL REFERENCES tenants(id), conversation_id UUID NOT NULL REFERENCES conversations(id), status message_status NOT NULL DEFAULT 'unread', ...);
 ```
 
-**Rationale**: All existing messages (if any exist before this migration) receive `status='unread'` as a safe default. The future inbox feature will add a `PATCH /messages/{id}/read` endpoint to transition messages to `'read'`.
+**Rationale**: Simulated inbound messages must be stored in the same structure future real WhatsApp ingestion will use. The future inbox feature reads these rows.
 
 ---
 
@@ -45,24 +47,25 @@ All other columns unchanged from Spec 001.
 
 ```python
 class SimulatorMessageRequest(BaseModel):
-    client_name: str          # required; stripped; min 1 char after strip
+    client_name: str | None = None      # required only when conversation_id is omitted
     client_contact: str | None = None   # optional phone or email
     body: str                 # required; stripped; 1–4000 chars after strip
-    conversation_id: UUID | None = None # optional; if supplied, skip name-lookup
+    conversation_id: UUID | None = None # if supplied, skip name-lookup
 
-    @validator("body")
-    def body_not_empty(cls, v):
+    @field_validator("body")
+    @classmethod
+    def body_not_empty(cls, v: str):
         if not v.strip():
             raise ValueError("Message body cannot be empty or whitespace only")
         if len(v) > 4000:
             raise ValueError("Message body cannot exceed 4000 characters")
         return v
 
-    @validator("client_name")
-    def client_name_not_empty(cls, v):
-        if not v.strip():
+    @model_validator(mode="after")
+    def conversation_or_client_name_required(self):
+        if self.conversation_id is None and not (self.client_name and self.client_name.strip()):
             raise ValueError("Client name cannot be empty")
-        return v
+        return self
 ```
 
 ### `SimulatorMessageResponse`
@@ -140,7 +143,7 @@ export const SIMULATOR_PRESETS: SimulatorPreset[] = [
 
 ```typescript
 export interface SimulatorMessagePayload {
-  client_name: string;
+  client_name?: string;
   client_contact?: string;
   body: string;
   conversation_id?: string;
@@ -163,7 +166,7 @@ export interface SimulatorMessageResult {
 |--------|---------|-----|
 | `Conversation` | Simulator service | Created or reused; `status` may be updated from `closed` → `open` |
 | `Message` | Simulator service | Created with `direction=inbound`, `status=unread` |
-| `AuditLog` | `AuditService.log()` | `simulator_message_created` event written on success |
+| Future audit log | simulator event hook | `simulator_message_created` event emitted/recorded on success if audit infrastructure exists |
 | `TenantScopedRepository` | Simulator service | All DB reads/writes use the tenant-filtered repo |
 | `TenantContext` | Route dependency | `ctx.tenant_id` and `ctx.role` extracted from JWT |
 | `require_role` | Route guard | `require_role(UserRole.staff, UserRole.manager)` |

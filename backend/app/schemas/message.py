@@ -3,7 +3,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict
 
-from app.models.message import MessageDirection
+from app.models.message import MessageDirection, MessageStatus
 
 
 class MessageCreate(BaseModel):
@@ -18,6 +18,7 @@ class MessageRead(BaseModel):
     tenant_id: UUID
     conversation_id: UUID
     direction: MessageDirection
+    status: MessageStatus
     body: str
     source: str | None
     sender_user_id: UUID | None

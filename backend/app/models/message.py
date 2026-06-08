@@ -15,6 +15,11 @@ class MessageDirection(str, enum.Enum):
     outbound = "outbound"
 
 
+class MessageStatus(str, enum.Enum):
+    unread = "unread"
+    read = "read"
+
+
 class Message(Base):
     __tablename__ = "messages"
     __table_args__ = (
@@ -30,6 +35,11 @@ class Message(Base):
         Uuid(as_uuid=True), ForeignKey("conversations.id", ondelete="CASCADE"), nullable=False
     )
     direction: Mapped[MessageDirection] = mapped_column(Enum(MessageDirection), nullable=False)
+    status: Mapped[MessageStatus] = mapped_column(
+        Enum(MessageStatus, name="message_status"),
+        nullable=False,
+        default=MessageStatus.unread,
+    )
     body: Mapped[str] = mapped_column(Text, nullable=False)
     source: Mapped[str | None] = mapped_column(String(100), nullable=True)
     sender_user_id: Mapped[UUID | None] = mapped_column(

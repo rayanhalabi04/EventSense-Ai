@@ -86,17 +86,17 @@ A staff planner wants to add a follow-up message from the same client to a conve
 
 ### User Story 4 — View Simulator Audit Trail (Priority: P3)
 
-A manager wants to verify which simulated messages were injected in their workspace and when. They view the audit log filtered to simulator events and see a list of all simulator-created messages with timestamps, client names, and the staff user who created each one.
+A manager will later be able to verify which simulated messages were injected in their workspace and when through the dedicated audit-log feature. For this simulator feature, each successful write emits/records a `simulator_message_created` event if audit infrastructure exists.
 
-**Why this priority**: Auditability is required by Spec 001 for all tenant data writes. Simulated messages are distinguishable from real messages by their audit event type, which allows managers to understand the provenance of data in the workspace during demos and training sessions.
+**Why this priority**: Auditability matters for later review, but full audit log UI/API is a separate feature. This simulator only needs to provide the event hook/data.
 
-**Independent Test**: Inject two simulator messages as different staff users. Authenticated as Manager, view audit log filtered by `simulator_message_created`. Verify both entries appear with the correct actor, client, and timestamp. Verify no other tenant's simulator events are visible.
+**Independent Test**: Inject two simulator messages and verify the simulator emits/records `simulator_message_created` event data with actor, conversation ID, message ID, client name when available, and timestamp if audit infrastructure exists.
 
 **Acceptance Scenarios**:
 
-1. **Given** simulator messages have been injected, **When** a Manager views the audit log filtered by simulator events, **Then** each simulated message appears as an entry with: actor user, client name, conversation ID, and timestamp.
-2. **Given** a Manager filters the audit log, **When** they view simulator events, **Then** only events from their own tenant are shown.
-3. **Given** a Staff user, **When** they attempt to access the audit log, **Then** they receive a permission-denied response (consistent with Spec 002 role rules).
+1. **Given** a simulator message is created, **When** audit infrastructure exists, **Then** one `simulator_message_created` event is recorded/emitted.
+2. **Given** a closed conversation is re-opened by a simulator message, **When** the event is recorded/emitted, **Then** the same event includes `detail.reopened=true`; a second audit record is not required.
+3. **Given** full audit log browsing is needed, **When** that feature is implemented, **Then** it uses these event details and tenant-scopes results.
 
 ---
 
@@ -119,7 +119,7 @@ A manager wants to verify which simulated messages were injected in their worksp
 - Re-open closed conversation when a simulator message is injected into it
 - `direction=inbound` set on all simulator-created messages
 - Message status set to `unread` (or equivalent new-and-awaiting-response state) on creation
-- `simulator_message_created` audit event written for every successful submission
+- one `simulator_message_created` audit event emitted/recorded for every successful submission if audit infrastructure exists
 - Tenant isolation: messages scoped to authenticated user's tenant; no cross-tenant visibility
 - Empty or whitespace-only message bodies rejected with a validation error
 - Character limit: 4,000 characters per message
@@ -159,7 +159,7 @@ A manager wants to verify which simulated messages were injected in their worksp
 |--------|-------------|
 | Inbound message record | Created in the tenant's conversation with `direction=inbound`, status=`unread`, linked to the correct conversation. |
 | New or updated conversation | Created if no matching client conversation exists; updated (`updated_at` refreshed) if one does; re-opened if the existing conversation was `closed`. |
-| `simulator_message_created` audit entry | Written to the tenant's audit log with actor, client name, conversation ID, message ID, and timestamp. |
+| `simulator_message_created` event | Emitted/recorded with actor, client name when available, conversation ID, message ID, and `reopened=true` when applicable if audit infrastructure exists. |
 | Validation error | Returned for empty/whitespace message body or message exceeding 4,000 characters. |
 | Simulator confirmation | UI feedback confirming the message was injected and naming the conversation it was added to. |
 
@@ -173,7 +173,7 @@ A manager wants to verify which simulated messages were injected in their worksp
 4. **Submission validated** — The backend validates: message body is non-empty and non-whitespace; body does not exceed 4,000 characters; client name is non-empty.
 5. **Conversation resolved** — The backend looks up an existing open conversation matching the client name + contact within the authenticated tenant. If none exists, a new conversation is created. If a matching conversation is `closed`, it is re-opened.
 6. **Message created** — An inbound message record is created with `direction=inbound`, `status=unread`, linked to the resolved conversation, with `tenant_id` from the JWT.
-7. **Audit event written** — A `simulator_message_created` audit event is appended to the tenant's audit log.
+7. **Audit event emitted** — A single `simulator_message_created` event is recorded/emitted if audit infrastructure exists.
 8. **Confirmation returned** — The system returns success with the message ID and conversation ID. The simulator form is cleared (or retains the client name for follow-up injection).
 
 ---
@@ -198,7 +198,7 @@ A manager wants to verify which simulated messages were injected in their worksp
 
 1. Staff selects an existing conversation that is in `closed` status.
 2. The backend accepts the message, appends it to the conversation, and automatically changes the conversation status from `closed` to `open`.
-3. The audit event records both the message creation and the status change.
+3. The single simulator audit event includes `detail.reopened=true`.
 4. The inbox now shows the conversation as open with the new unread message.
 
 ### Preset Selected but Not Edited
@@ -221,7 +221,7 @@ A manager wants to verify which simulated messages were injected in their worksp
 | AC-06 | Whitespace-only message body is rejected identically to empty | Integration test: submit `"   "`, assert 422 |
 | AC-07 | Message body exceeding 4,000 characters is rejected | Integration test: submit 4,001-char body, assert 422 |
 | AC-08 | Created message has `direction=inbound` and `status=unread` | DB assertion on created record |
-| AC-09 | `simulator_message_created` audit event is written for every successful submission | Query audit_logs after submission; assert entry with correct action, actor, conversation_id |
+| AC-09 | `simulator_message_created` event is emitted/recorded for every successful submission when audit infrastructure exists | Test event call/record with correct action, actor, conversation_id |
 | AC-10 | Simulated messages from Tenant A are invisible to authenticated users of Tenant B | Integration test: inject for Tenant A, query inbox as Tenant B, assert zero results |
 | AC-11 | Five preset messages are available covering all five required scenario types | UI test: open simulator, assert five presets present and each covers its named scenario |
 | AC-12 | `tenant_id` is derived from the authenticated session — not from any client-supplied value | Integration test: submit with mismatched `tenant_id` in body; verify session value is used |
@@ -232,7 +232,7 @@ A manager wants to verify which simulated messages were injected in their worksp
 
 | Dependency | Type | Notes |
 |------------|------|-------|
-| Spec 001 — Multi-Tenant Workspace | Required | Provides `conversations` and `messages` tables, `tenant_id` isolation, `audit_logs` table, `AuditService`, `TenantScopedRepository`. This feature writes to those tables using the established patterns. |
+| Spec 001 — Multi-Tenant Workspace | Required | Provides tenant/user foundation, tenant isolation rules, `TenantContext`, and tenant-scoped service pattern. |
 | Spec 002 — Authentication and Roles | Required | Provides authenticated session with `tenant_id`, `user_id`, and `role`. The simulator is accessible to `staff` and `manager` roles only. Platform Admin has no access to the simulator. |
 
 ---
@@ -258,7 +258,7 @@ The following design constraints ensure AI downstream compatibility:
 | **SR-02: Role restriction** | Only `staff` and `manager` roles may use the simulator. Platform Admin has no access. Requests with insufficient role return 403. |
 | **SR-03: No cross-tenant conversation selection** | When a user selects an existing conversation to inject into, the backend verifies the conversation's `tenant_id` matches the authenticated user's `tenant_id`. A mismatch returns 403. |
 | **SR-04: Input validation at the backend** | Message body and client name validation (empty check, whitespace check, length check) is enforced server-side. Frontend validation is a UX convenience only — the backend does not trust it. |
-| **SR-05: Audit on every write** | Every successful simulator message creation is audit-logged. Failed attempts due to validation errors do not generate audit events (no record of no-ops). Failed attempts due to permission violations do generate audit events (consistent with Spec 001 SR-04). |
+| **SR-05: Audit event on every successful write** | Every successful simulator message creation emits/records one simulator event if audit infrastructure exists. Failed validation does not create audit events. Permission failures follow Spec 001 actor-tenant audit policy once audit logging exists. |
 | **SR-06: No real client data exposure** | The simulator only reads the list of existing conversations within the authenticated tenant. It never exposes client contact details, message history, or any data belonging to another tenant. |
 
 ---
@@ -269,6 +269,6 @@ The following design constraints ensure AI downstream compatibility:
 - Client-name matching for conversation lookup uses exact string matching (case-insensitive) plus optional contact field. Fuzzy matching is out of scope for MVP.
 - The five preset messages are hard-coded in the frontend for MVP; a configurable preset library is a post-MVP enhancement.
 - The simulator does not simulate WhatsApp-specific metadata such as message IDs from WhatsApp, delivery timestamps, or phone numbers. The message body is all that is captured.
-- A "conversation" in this context is the same `conversations` table entity defined in Spec 001. No new table or entity is introduced.
-- The `status=unread` field referred to in the spec maps to the message status mechanism already defined or implied in Spec 001's `messages` table. If a dedicated `status` column does not exist on `messages`, it is added as part of this feature's schema work.
+- A "conversation" in this context is the `conversations` table entity introduced by this simulator feature so later inbox and AI features can reuse the same structure.
+- The `status=unread` field is introduced by this feature's `messages` schema work and is reused by the inbox.
 - Platform Admin does not need simulator access for any provisioning or demo workflow — they use the tenant admin endpoints instead.

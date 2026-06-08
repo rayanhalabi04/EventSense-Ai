@@ -5,14 +5,14 @@
 **Input**: Feature specification from `specs/003-message-simulator/spec.md`
 
 **Depends on**:
-- [Spec 001 — Multi-Tenant Workspace](../001-multi-tenant-workspace/plan.md): `conversations`, `messages`, `audit_logs` tables; `TenantScopedRepository`; `AuditService`
+- [Spec 001 — Multi-Tenant Workspace](../001-multi-tenant-workspace/plan.md): tenant/user foundation, tenant isolation rules, tenant-scoped service pattern, `ForbiddenError` contract
 - [Spec 002 — Authentication and Roles](../002-auth-and-roles/plan.md): JWT auth; `staff`/`manager` role; `require_role` dependency; `get_current_tenant_context`
 
 ---
 
 ## Summary
 
-Build a message injection tool that lets staff and demo operators create realistic inbound client messages inside a tenant workspace — without using the real WhatsApp Business API. A single `POST /api/v1/simulator/messages` endpoint resolves or creates a tenant-scoped conversation and appends an `inbound`/`unread` message. Five hard-coded presets cover the five key demo scenarios. All writes are tenant-isolated and audit-logged with `simulator_message_created`. The one schema change is adding a `status` column (`unread`/`read`) to the existing `messages` table.
+Build a message injection tool that lets staff and demo operators create realistic inbound client messages inside a tenant workspace — without using the real WhatsApp Business API. A single `POST /api/v1/simulator/messages` endpoint resolves or creates a tenant-scoped conversation and appends an `inbound`/`unread` message. Five hard-coded presets cover the five key demo scenarios. This feature creates the basic conversations/messages schema it needs. All writes are tenant-isolated and emit/record one `simulator_message_created` event if audit infrastructure exists.
 
 ---
 
@@ -24,7 +24,7 @@ Build a message injection tool that lets staff and demo operators create realist
 - Backend: FastAPI, SQLAlchemy 2.x, Alembic, pydantic (validators for body/name checks)
 - Frontend: React 18, Vite 5, Tailwind CSS, shadcn/ui (`Button`, `Input`, `Textarea`, `Select`, `Badge`)
 
-**Storage**: PostgreSQL 15 — one additive migration (message status column)
+**Storage**: PostgreSQL 15 — one migration for conversations/messages and message status
 
 **Testing**: pytest + pytest-asyncio (backend)
 
@@ -80,7 +80,7 @@ backend/
 │   └── schemas/
 │       └── simulator.py               # SimulatorMessageRequest, SimulatorMessageResponse
 ├── alembic/versions/
-│   └── 0010_add_message_status.py     # ADD COLUMN status message_status NOT NULL DEFAULT 'unread'
+│   └── 0010_create_conversations_messages.py
 └── tests/
     └── integration/
         └── test_simulator.py          # AC-01 through AC-12 integration tests
@@ -103,9 +103,10 @@ frontend/
 Existing files modified:
 
 ```
-backend/app/models/message.py          # ADD: MessageStatus enum + status column
+backend/app/models/conversation.py     # ADD: Conversation model
+backend/app/models/message.py          # ADD: Message model + MessageStatus enum
 backend/app/main.py                    # ADD: mount simulator router at /api/v1/simulator
-backend/app/services/audit_service.py  # ADD: AuditAction.simulator_message_created constant
+backend/app/services/simulator_events.py # ADD: simulator_message_created event hook/constant if audit infra is absent
 frontend/src/App.tsx                   # ADD: /simulator route with ProtectedRoute + RoleGuard
 ```
 
@@ -115,13 +116,13 @@ frontend/src/App.tsx                   # ADD: /simulator route with ProtectedRou
 
 | Area | What is built |
 |------|--------------|
-| Alembic migration | `0010_add_message_status`: adds `MessageStatus` enum and `status NOT NULL DEFAULT 'unread'` to `messages` |
-| `MessageStatus` enum | `unread`, `read` — added to `backend/app/models/message.py` |
+| Alembic migration | `0010_create_conversations_messages`: creates conversations/messages and message status |
+| `MessageStatus` enum | `unread`, `read` |
 | Pydantic schemas | `SimulatorMessageRequest` (with validators), `SimulatorMessageResponse` in `backend/app/schemas/simulator.py` |
 | `SimulatorService` | `resolve_or_create_conversation()` + `create_inbound_message()` + `list_tenant_conversations()` in `backend/app/services/simulator_service.py` |
-| `POST /api/v1/simulator/messages` | Main endpoint; requires `staff`/`manager`; validates, resolves conversation, creates message, audit logs |
+| `POST /api/v1/simulator/messages` | Main endpoint; requires `staff`/`manager`; validates, resolves conversation, creates message, emits simulator event |
 | `GET /api/v1/simulator/conversations` | Returns tenant's conversations for dropdown; requires `staff`/`manager` |
-| `AuditAction.simulator_message_created` | Added to audit_service.py constants |
+| `simulator_message_created` event | Defined for future audit-log integration |
 | `SIMULATOR_PRESETS` | TypeScript constant in `frontend/src/data/simulatorPresets.ts` |
 | `simulator.ts` API module | `injectMessage()` and `listConversations()` |
 | `SimulatorPage` | `/simulator` page with full form and confirmation display |
@@ -159,7 +160,7 @@ async def resolve_or_create_conversation(
     client_name: str,
     client_contact: str | None,
     conversation_id: UUID | None,
-    audit_service: AuditService,
+    event_recorder: SimulatorEventRecorder | None,
     ctx: TenantContext,
 ) -> tuple[Conversation, bool]:   # (conversation, is_new)
     """
@@ -170,7 +171,7 @@ async def resolve_or_create_conversation(
 
 Resolution steps (in order):
 
-1. **If `conversation_id` supplied**: fetch from DB. If `tenant_id` mismatch → `ForbiddenError` + audit log. If `status == "closed"` → set `status = "open"`. Return `(conv, False)`.
+1. **If `conversation_id` supplied**: fetch from DB. If `tenant_id` mismatch → `ForbiddenError` (future audit follows actor-tenant policy). If `status == "closed"` → set `status = "open"`. Return `(conv, False)`.
 
 2. **If no `conversation_id`**: query `conversations WHERE tenant_id=:tid AND LOWER(client_name)=LOWER(:name) AND client_contact IS NOT DISTINCT FROM :contact ORDER BY created_at DESC LIMIT 1`.
    - Found, open → return `(conv, False)`
@@ -217,12 +218,12 @@ async def create_inbound_message(
 
 ---
 
-## Audit Logging
+## Audit Event Hook
 
-`AuditService.log()` is called on every successful message creation:
+One `simulator_message_created` event is emitted/recorded on every successful message creation if audit infrastructure exists:
 
 ```python
-audit_service.log(
+event_recorder.record(
     tenant_id=ctx.tenant_id,
     action=AuditAction.simulator_message_created,
     outcome=AuditOutcome.allowed,
@@ -238,7 +239,7 @@ audit_service.log(
 )
 ```
 
-No audit event is written for validation failures (422 responses). Permission failures (403) are audit-logged by `require_role` and `ForbiddenError` handlers from Spec 001/002.
+No audit event is written for validation failures (422 responses). Permission failures follow the actor-tenant audit policy once the audit-log feature exists.
 
 ---
 
@@ -253,7 +254,7 @@ No audit event is written for validation failures (422 responses). Permission fa
 | `test_simulator_rejects_empty_body` | AC-05 |
 | `test_simulator_rejects_whitespace_only_body` | AC-06 |
 | `test_simulator_rejects_body_exceeding_4000_chars` | AC-07 |
-| `test_simulator_writes_audit_log_on_success` | AC-09 |
+| `test_simulator_emits_event_on_success_if_available` | AC-09 |
 | `test_simulator_message_invisible_to_other_tenant` | AC-10 |
 | `test_simulator_conversation_list_scoped_to_tenant` | AC-10 (GET endpoint) |
 | `test_simulator_cross_tenant_conversation_id_returns_403` | SR-03, AC-12 |

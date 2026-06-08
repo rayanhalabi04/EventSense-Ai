@@ -82,8 +82,8 @@ async def test_elegant_sees_own_simulated_message_in_inbox(client: AsyncClient):
     rows = inbox_response.json()
 
     assert len(rows) == 1
-    assert rows[0]["conversation_id"] == simulated["conversation"]["id"]
-    assert rows[0]["latest_message_id"] == simulated["message"]["id"]
+    assert rows[0]["conversation_id"] == simulated["conversation_id"]
+    assert rows[0]["latest_message_id"] == simulated["message_id"]
     assert rows[0]["client_name"] == "Maya Haddad"
     assert rows[0]["client_contact"] == "+96170111222"
     assert rows[0]["message_preview"] == "Hi, can you send me your wedding package prices?"
@@ -193,7 +193,7 @@ async def test_inbox_ignores_client_supplied_tenant_id(client: AsyncClient):
     assert inbox_response.status_code == 200
     rows = inbox_response.json()
     assert len(rows) == 1
-    assert rows[0]["latest_message_id"] == simulate_response.json()["message"]["id"]
+    assert rows[0]["latest_message_id"] == simulate_response.json()["message_id"]
 
 
 async def test_inbox_requires_authentication(client: AsyncClient):

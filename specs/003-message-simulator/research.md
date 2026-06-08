@@ -6,12 +6,13 @@ All technical choices are resolved from the provided stack and prior spec contex
 
 ---
 
-## Decision 1: Schema Changes — Message Status Column
+## Decision 1: Schema Changes - Conversations, Messages, and Message Status
 
-**Decision**: Add a `MessageStatus` enum (`unread`, `read`) and a `status` column to the existing `messages` table via Alembic migration `0010_add_message_status`. Default value is `unread`. This is the only schema change introduced by this feature.
+**Decision**: Create the basic tenant-owned `conversations` and `messages` tables needed by the simulator, including `MessageStatus` enum (`unread`, `read`) and a `status` column defaulting to `unread`, via Alembic migration `0010_create_conversations_messages`.
 
 **Rationale**:
-- Spec 001's `messages` table does not include a status column (confirmed from data-model.md). The inbox display feature (future) needs to distinguish read from unread messages.
+- Spec 001 is foundation-only after cleanup; this simulator is the first feature that needs persisted client conversations/messages.
+- The inbox display feature needs to distinguish read from unread messages.
 - A PostgreSQL enum + NOT NULL column with a default is the right choice — it prevents null-status messages and keeps the schema self-describing.
 - Only this feature's endpoint sets `status=unread` on creation. A future "mark as read" feature will update it to `read`.
 
@@ -71,14 +72,14 @@ All technical choices are resolved from the provided stack and prior spec contex
 
 ---
 
-## Decision 4: Audit Event Type
+## Decision 4: Simulator Event Type
 
-**Decision**: Use `simulator_message_created` as the `action` value in `audit_logs`. This is distinct from a hypothetical future `message_received` event that the real WhatsApp integration will use.
+**Decision**: Use `simulator_message_created` as the event name emitted/recorded by simulator writes when audit infrastructure exists. This is distinct from a hypothetical future `message_received` event that the real WhatsApp integration will use.
 
 **Rationale**:
-- Keeping simulator and real-channel audit events distinct allows managers and the platform team to filter simulator data out of AI performance metrics without needing a separate flag on the `messages` table.
-- The spec explicitly names `simulator_message_created` as the required audit event.
-- When the real WhatsApp integration is built, it will use `message_received` — the two events coexist in the same `audit_logs` table.
+- Keeping simulator and real-channel events distinct allows later audit/evaluation features to filter simulator data out of AI performance metrics without needing a separate flag on the `messages` table.
+- The spec explicitly names `simulator_message_created` as the required event hook.
+- When the real WhatsApp integration is built, it can use `message_received`; the later audit feature can persist both event types.
 
 ---
 
@@ -110,8 +111,8 @@ export const SIMULATOR_PRESETS = [
 
 **Decision**: Validation is enforced at both layers:
 
-- **Frontend**: live character counter; submit button disabled when `body.trim().length === 0` or `body.length > 4000`; inline error messages
-- **Backend** (authoritative): Pydantic `@validator` on `SimulatorMessageRequest.body` — `body.strip()` empty → 422; `len(body) > 4000` → 422; `client_name.strip()` empty → 422
+- **Frontend**: live character counter; submit button disabled when `body.trim().length === 0`, `body.length > 4000`, or neither `conversation_id` nor non-empty `client_name` exists
+- **Backend** (authoritative): Pydantic v2 `@field_validator` on `SimulatorMessageRequest.body` and `@model_validator(mode="after")` requiring either `conversation_id` or non-empty `client_name`
 
 **Rationale**:
 - Frontend validation is UX; backend validation is security. Both are needed.

@@ -19,7 +19,7 @@ This guide covers how to run the simulator locally, inject test messages, and ve
 
 ```bash
 cd backend
-alembic upgrade head   # applies migration 0010_add_message_status
+alembic upgrade head   # applies migration 0010_create_conversations_messages
 ```
 
 Verify:
@@ -74,7 +74,6 @@ curl -s -X POST http://localhost:8000/api/v1/simulator/messages \
   -H "Content-Type: application/json" \
   -d "{
     \"conversation_id\": \"$CONV_ID\",
-    \"client_name\": \"Alice Johnson\",
     \"body\": \"We need to change the guest count from 150 to 220.\"
   }" | jq .
 # Expected: is_new_conversation=false, same conversation_id
@@ -162,7 +161,7 @@ backend/
 │   └── schemas/
 │       └── simulator.py               # SimulatorMessageRequest, SimulatorMessageResponse
 ├── alembic/versions/
-│   └── 0010_add_message_status.py     # Add status column to messages
+│   └── 0010_create_conversations_messages.py
 └── tests/
     └── integration/
         └── test_simulator.py          # AC-01 through AC-12 integration tests
