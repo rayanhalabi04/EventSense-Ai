@@ -1,0 +1,71 @@
+text,label,source,source_label,mapping_confidence,is_event_specific
+"Hi, I want to reserve your wedding planning team for September 12.",booking_inquiry,eventsense_golden_handwritten,booking_inquiry,golden_do_not_train,True
+Can we start a booking for the luxury wedding package?,booking_inquiry,eventsense_golden_handwritten,booking_inquiry,golden_do_not_train,True
+I would like to book decoration and catering coordination for my engagement.,booking_inquiry,eventsense_golden_handwritten,booking_inquiry,golden_do_not_train,True
+What should I do to confirm my event booking with you?,booking_inquiry,eventsense_golden_handwritten,booking_inquiry,golden_do_not_train,True
+Can I reserve the garden setup for my wedding date?,booking_inquiry,eventsense_golden_handwritten,booking_inquiry,golden_do_not_train,True
+Can you send me the price of the premium wedding package?,pricing_request,eventsense_golden_handwritten,pricing_request,golden_do_not_train,True
+How much would it cost for 180 guests with decoration and catering?,pricing_request,eventsense_golden_handwritten,pricing_request,golden_do_not_train,True
+What is the deposit amount for booking?,pricing_request,eventsense_golden_handwritten,pricing_request,golden_do_not_train,True
+Do you have a package price list?,pricing_request,eventsense_golden_handwritten,pricing_request,golden_do_not_train,True
+How much extra is the bridal entrance setup?,pricing_request,eventsense_golden_handwritten,pricing_request,golden_do_not_train,True
+Are you available on August 18 for a wedding?,availability_question,eventsense_golden_handwritten,availability_question,golden_do_not_train,True
+Is the luxury package available next Friday?,availability_question,eventsense_golden_handwritten,availability_question,golden_do_not_train,True
+Can your team handle an event for 220 guests in October?,availability_question,eventsense_golden_handwritten,availability_question,golden_do_not_train,True
+Do you have any open dates in September?,availability_question,eventsense_golden_handwritten,availability_question,golden_do_not_train,True
+Is the outdoor venue setup available for my date?,availability_question,eventsense_golden_handwritten,availability_question,golden_do_not_train,True
+What does the premium package include?,service_question,eventsense_golden_handwritten,service_question,golden_do_not_train,True
+Do you provide lighting and stage setup?,service_question,eventsense_golden_handwritten,service_question,golden_do_not_train,True
+Can you explain your deposit policy?,service_question,eventsense_golden_handwritten,service_question,golden_do_not_train,True
+Is photography coordination included?,service_question,eventsense_golden_handwritten,service_question,golden_do_not_train,True
+Do you help with vendor coordination?,service_question,eventsense_golden_handwritten,service_question,golden_do_not_train,True
+"Urgent, the wedding is tomorrow and we need to change the decoration colors.",urgent_change,eventsense_golden_handwritten,urgent_change,golden_do_not_train,True
+"Please reply quickly, we need to move the event indoors because of the weather.",urgent_change,eventsense_golden_handwritten,urgent_change,golden_do_not_train,True
+The bride changed the entrance idea and the event is next week.,urgent_change,eventsense_golden_handwritten,urgent_change,golden_do_not_train,True
+Last minute change: we need another table setup tonight.,urgent_change,eventsense_golden_handwritten,urgent_change,golden_do_not_train,True
+"Emergency update, can we change the catering plan today?",urgent_change,eventsense_golden_handwritten,urgent_change,golden_do_not_train,True
+We need to increase the guest count from 150 to 210.,guest_count_change,eventsense_golden_handwritten,guest_count_change,golden_do_not_train,True
+Can we reduce the number of guests to 120?,guest_count_change,eventsense_golden_handwritten,guest_count_change,golden_do_not_train,True
+The guest list changed and now we expect 260 people.,guest_count_change,eventsense_golden_handwritten,guest_count_change,golden_do_not_train,True
+Can we add 30 more guests to the reception?,guest_count_change,eventsense_golden_handwritten,guest_count_change,golden_do_not_train,True
+Will changing the guest count affect the catering price?,guest_count_change,eventsense_golden_handwritten,guest_count_change,golden_do_not_train,True
+I am very unhappy with the decoration sample you sent.,complaint,eventsense_golden_handwritten,complaint,golden_do_not_train,True
+This is not what we agreed on and the wedding is soon.,complaint,eventsense_golden_handwritten,complaint,golden_do_not_train,True
+No one is answering me and I am disappointed with the service.,complaint,eventsense_golden_handwritten,complaint,golden_do_not_train,True
+The setup looks completely different from the package photos.,complaint,eventsense_golden_handwritten,complaint,golden_do_not_train,True
+I am upset because the coordinator missed our meeting.,complaint,eventsense_golden_handwritten,complaint,golden_do_not_train,True
+I want to cancel my wedding booking.,cancellation_request,eventsense_golden_handwritten,cancellation_request,golden_do_not_train,True
+Can I cancel the decoration service only?,cancellation_request,eventsense_golden_handwritten,cancellation_request,golden_do_not_train,True
+What happens to my deposit if I cancel?,cancellation_request,eventsense_golden_handwritten,cancellation_request,golden_do_not_train,True
+Please cancel our reservation for July 20.,cancellation_request,eventsense_golden_handwritten,cancellation_request,golden_do_not_train,True
+"We may postpone or cancel the event, what should we do?",cancellation_request,eventsense_golden_handwritten,cancellation_request,golden_do_not_train,True
+I paid the deposit but I did not receive confirmation.,payment_issue,eventsense_golden_handwritten,payment_issue,golden_do_not_train,True
+The payment link is not working.,payment_issue,eventsense_golden_handwritten,payment_issue,golden_do_not_train,True
+I was charged twice for the booking deposit.,payment_issue,eventsense_golden_handwritten,payment_issue,golden_do_not_train,True
+Can you check if the bank transfer arrived?,payment_issue,eventsense_golden_handwritten,payment_issue,golden_do_not_train,True
+The invoice amount is different from the package price.,payment_issue,eventsense_golden_handwritten,payment_issue,golden_do_not_train,True
+Can I speak to the manager?,human_escalation,eventsense_golden_handwritten,human_escalation,golden_do_not_train,True
+Please ask the event coordinator to call me.,human_escalation,eventsense_golden_handwritten,human_escalation,golden_do_not_train,True
+I need to talk to a real person about this issue.,human_escalation,eventsense_golden_handwritten,human_escalation,golden_do_not_train,True
+Can the owner review my case?,human_escalation,eventsense_golden_handwritten,human_escalation,golden_do_not_train,True
+"Do not send an automatic reply, I want someone responsible.",human_escalation,eventsense_golden_handwritten,human_escalation,golden_do_not_train,True
+Thank you so much.,other,eventsense_golden_handwritten,other,golden_do_not_train,True
+Okay noted.,other,eventsense_golden_handwritten,other,golden_do_not_train,True
+What is the weather like today?,other,eventsense_golden_handwritten,other,golden_do_not_train,True
+Wrong number sorry.,other,eventsense_golden_handwritten,other,golden_do_not_train,True
+Free prize available now click here.,other,eventsense_golden_handwritten,other,golden_do_not_train,True
+I paid the deposit yesterday but my booking still says not confirmed.,payment_issue,eventsense_extra_golden,payment_issue,golden_event_only,True
+The payment link failed twice and the event date is close.,payment_issue,eventsense_extra_golden,payment_issue,golden_event_only,True
+I was charged twice for the same wedding deposit.,payment_issue,eventsense_extra_golden,payment_issue,golden_event_only,True
+I am disappointed because the decoration sample is not like the agreed theme.,complaint,eventsense_extra_golden,complaint,golden_event_only,True
+No one is answering me and the wedding is next week.,complaint,eventsense_extra_golden,complaint,golden_event_only,True
+This setup is not what we agreed on.,complaint,eventsense_extra_golden,complaint,golden_event_only,True
+Please ask the manager to call me today.,human_escalation,eventsense_extra_golden,human_escalation,golden_event_only,True
+I need to speak with the person responsible for my wedding file.,human_escalation,eventsense_extra_golden,human_escalation,golden_event_only,True
+Can a real staff member handle this?,human_escalation,eventsense_extra_golden,human_escalation,golden_event_only,True
+Do you provide lighting and flower decoration together?,service_question,eventsense_extra_golden,service_question,golden_event_only,True
+What is included in the luxury package?,service_question,eventsense_extra_golden,service_question,golden_event_only,True
+Do you coordinate with the venue on the event day?,service_question,eventsense_extra_golden,service_question,golden_event_only,True
+"thank you, I will reply later",other,eventsense_extra_golden,other,golden_event_only,True
+sorry wrong number,other,eventsense_extra_golden,other,golden_event_only,True
+can you help me with my university project?,other,eventsense_extra_golden,other,golden_event_only,True
