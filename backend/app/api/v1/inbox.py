@@ -1,23 +1,38 @@
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_async_session
 from app.core.tenant_context import TenantContext, require_role
-from app.models.conversation import Conversation, ConversationStatus
-from app.models.message import Message, MessageDirection
+from app.models.conversation import ConversationStatus
+from app.models.message import MessageDirection
 from app.models.user import UserRole
-from app.schemas.inbox import InboxMessageRow
+from app.schemas.inbox import (
+    InboxFilters,
+    InboxMessageRow,
+    InboxResponse,
+    InboxSummaryResponse,
+)
+from app.services.inbox_service import InboxService
 
 
 router = APIRouter()
 
 
-def build_message_preview(body: str, limit: int = 120) -> str:
-    normalized = " ".join(body.split())
-    if len(normalized) <= limit:
-        return normalized
-    return f"{normalized[: limit - 1]}..."
+@router.get("", response_model=InboxResponse)
+async def get_inbox(
+    filters: InboxFilters = Depends(),
+    ctx: TenantContext = Depends(require_role(UserRole.staff, UserRole.manager)),
+    session: AsyncSession = Depends(get_async_session),
+) -> InboxResponse:
+    return await InboxService.get_inbox(session=session, tenant_id=ctx.tenant_id, filters=filters)
+
+
+@router.get("/summary", response_model=InboxSummaryResponse)
+async def get_inbox_summary(
+    ctx: TenantContext = Depends(require_role(UserRole.staff, UserRole.manager)),
+    session: AsyncSession = Depends(get_async_session),
+) -> InboxSummaryResponse:
+    return await InboxService.get_summary(session=session, tenant_id=ctx.tenant_id)
 
 
 @router.get("/messages", response_model=list[InboxMessageRow])
@@ -30,52 +45,12 @@ async def list_inbox_messages(
     ctx: TenantContext = Depends(require_role(UserRole.staff, UserRole.manager)),
     session: AsyncSession = Depends(get_async_session),
 ) -> list[InboxMessageRow]:
-    latest_message_query = (
-        select(
-            Message.id.label("message_id"),
-            func.row_number()
-            .over(
-                partition_by=Message.conversation_id,
-                order_by=(Message.sent_at.desc(), Message.id.desc()),
-            )
-            .label("row_number"),
-        )
-        .join(Conversation, Conversation.id == Message.conversation_id)
-        .where(Message.tenant_id == ctx.tenant_id, Conversation.tenant_id == ctx.tenant_id)
+    return await InboxService.get_latest_message_rows(
+        session=session,
+        tenant_id=ctx.tenant_id,
+        status=status,
+        source=source,
+        direction=direction,
+        page=page,
+        page_size=page_size,
     )
-
-    if status is not None:
-        latest_message_query = latest_message_query.where(Conversation.status == status)
-    if source is not None:
-        latest_message_query = latest_message_query.where(Message.source == source)
-    if direction is not None:
-        latest_message_query = latest_message_query.where(Message.direction == direction)
-
-    latest_message_subquery = latest_message_query.subquery()
-    offset = (page - 1) * page_size
-
-    result = await session.execute(
-        select(Conversation, Message)
-        .join(Message, Message.conversation_id == Conversation.id)
-        .join(latest_message_subquery, latest_message_subquery.c.message_id == Message.id)
-        .where(latest_message_subquery.c.row_number == 1)
-        .order_by(Message.sent_at.desc(), Message.id.desc())
-        .offset(offset)
-        .limit(page_size)
-    )
-
-    return [
-        InboxMessageRow(
-            conversation_id=conversation.id,
-            latest_message_id=message.id,
-            client_name=conversation.client_name,
-            client_contact=conversation.client_contact,
-            message_preview=build_message_preview(message.body),
-            latest_message_body=message.body,
-            latest_message_at=message.sent_at,
-            status=conversation.status,
-            source=message.source,
-            direction=message.direction,
-        )
-        for conversation, message in result.all()
-    ]
