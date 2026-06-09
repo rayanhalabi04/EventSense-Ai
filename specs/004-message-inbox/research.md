@@ -168,9 +168,9 @@ The top-level response includes:
 
 ---
 
-## Decision 7: `total_unread` Fetch Strategy
+## Decision 7: Inbox Summary Fetch Strategy
 
-**Decision**: `total_unread` is computed by a separate lightweight query on every inbox page load:
+**Decision**: The full inbox response still includes `total_unread`, but the navbar/sidebar badge uses `GET /api/v1/inbox/summary` so counts are available before the inbox page itself loads.
 
 ```sql
 SELECT COUNT(DISTINCT conversation_id)
@@ -179,12 +179,12 @@ WHERE  tenant_id = :tenant_id
 AND    status    = 'unread'
 ```
 
-This query is separate from the paginated list query and always reflects the true tenant-wide unread count regardless of active filters.
+The summary endpoint also returns `total_open` and `high_risk_placeholder=0` for later risk-detection compatibility.
 
-**Rationale**: Running both queries in the same request (within one DB transaction) keeps the response atomic. No polling or WebSocket is needed for MVP — the badge updates on the next inbox load or navigation.
+**Rationale**: The badge should work before a user opens the inbox. A lightweight summary endpoint is simple, tenant-scoped, and avoids loading paginated list data just to draw navigation.
 
 **Alternatives considered**:
-- Include `total_unread` only in a separate `/inbox/summary` endpoint: adds an extra network round-trip for every page load. Rejected.
+- Rely only on `total_unread` from the full inbox response: simpler but badge is stale/missing until the inbox is loaded. Rejected.
 - Real-time push via WebSocket: excellent UX but overkill for MVP. Deferred.
 
 ---
@@ -196,14 +196,14 @@ This query is separate from the paginated list query and always reflects the tru
 ```
 InboxPage.tsx          → /inbox route; orchestrates all sub-components
   InboxFilters.tsx     → read-status toggle + conversation-status select
-  InboxSearch.tsx      → debounced (300ms) text input; min 2 chars
+  InboxSearch.tsx      → debounced (300ms) text input; ignores 0-1 char terms
   InboxList.tsx        → renders list or empty state
     InboxItem.tsx      → single conversation row/card
     InboxEmptyState.tsx→ global empty vs filtered empty variant
   InboxPagination.tsx  → previous/next + page indicator
 
 useInbox.ts            → reads/writes URLSearchParams; fetches from API; manages loading/error
-api/inbox.ts           → getInbox(params) Axios call
+api/inbox.ts           → getInbox(params), getInboxSummary() Axios calls
 ```
 
 `useInbox` calls `getInbox` on mount and on every filter/search/page change. It exposes `{ items, total, totalUnread, isLoading, error, filters, setFilter, setSearch, setPage }`.

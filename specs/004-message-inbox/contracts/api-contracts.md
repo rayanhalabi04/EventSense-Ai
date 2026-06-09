@@ -16,7 +16,7 @@ Returns a paginated, filtered, and optionally searched list of tenant conversati
 |-----------|------|---------|-------------|
 | `unread_only` | boolean | `false` | When `true`, returns only conversations with at least one unread message |
 | `status` | string | `null` | Filter by conversation status: `open`, `closed`, or `escalated`. Omit for all. |
-| `search` | string | `null` | Search term (min 2 chars). Matched against `client_name`, `client_contact`, and `messages.body` (case-insensitive). |
+| `search` | string | `null` | Search term. Blank/omitted means no search. Frontend ignores 0-1 character terms; backend normalizes blank to no search. |
 | `page` | integer | `1` | Page number (1-indexed). |
 | `page_size` | integer | `20` | Items per page. Fixed at 20 for MVP; max 100. |
 
@@ -76,12 +76,11 @@ Note: `total_unread` is always the tenant-wide unread count — it does not refl
 |--------|-----------|--------------|
 | 401 | Missing or invalid token | `MISSING_TOKEN` / `INVALID_TOKEN` / `TOKEN_EXPIRED` |
 | 403 | Role is `platform_admin` | `INSUFFICIENT_ROLE` |
-| 422 | `search` term is 1 character | Pydantic validation detail |
 | 422 | `status` value is not a valid enum member | Pydantic validation detail |
 | 422 | `page` < 1 | Pydantic validation detail |
 
 **Response field notes**:
-- `latest_message_preview`: body of the most recent message, truncated to 100 characters server-side. `null` if the conversation has no messages.
+- `latest_message_preview`: body of the most recent message, truncated to 100 characters server-side. `null` if the conversation has no messages; the UI displays "No messages yet."
 - `latest_message_at`: `sent_at` of the most recent message. `null` if no messages.
 - `latest_message_direction`: `"inbound"` or `"outbound"`. `null` if no messages.
 - `total`: count of conversations matching the active filters (used for pagination math).
@@ -98,6 +97,29 @@ Note: `total_unread` is always the tenant-wide unread count — it does not refl
 
 ---
 
+## GET /api/v1/inbox/summary
+
+Returns lightweight tenant-scoped counts for the navbar/sidebar badge without loading the full inbox page.
+
+**Auth**: Bearer token; requires `staff` or `manager` role.
+
+**Response 200**:
+
+```json
+{
+  "total_open": 12,
+  "unread_or_new": 3,
+  "high_risk_placeholder": 0
+}
+```
+
+**Notes**:
+- `unread_or_new` is the number of conversations with at least one unread message.
+- `high_risk_placeholder` remains `0` until the later risk-detection feature exists.
+- All counts are tenant-scoped using the authenticated user's `tenant_id`.
+
+---
+
 ## Cross-Cutting Behaviour
 
 | Scenario | HTTP Status | Audit logged |
@@ -106,7 +128,8 @@ Note: `total_unread` is always the tenant-wide unread count — it does not refl
 | Valid request, empty results | 200 (empty items array) | No |
 | Platform Admin token | 403 | Yes — `insufficient_role` |
 | Missing or expired token | 401 | No |
-| Search term < 2 chars | 422 | No |
+| Blank/omitted search | 200 | No; treated as no search |
+| 0-1 character frontend search | No request | Frontend keeps current list or clears search param |
 | Invalid status enum | 422 | No |
 
 ---
@@ -126,4 +149,4 @@ Note: `total_unread` is always the tenant-wide unread count — it does not refl
 
 ## Unread Badge Integration
 
-The `total_unread` field in every inbox response is the authoritative source for the nav badge. The frontend reads it from the last successful inbox fetch and displays it on the inbox nav link. No separate polling or `/inbox/summary` endpoint is needed for MVP.
+`GET /api/v1/inbox/summary` is the preferred source for the nav badge before the inbox page loads. The `total_unread` field in `GET /api/v1/inbox` remains useful after the inbox page has loaded and should match `summary.unread_or_new`.

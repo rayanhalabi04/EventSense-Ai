@@ -97,10 +97,20 @@ curl -s "http://localhost:8000/api/v1/inbox?search=cancel" \
   -H "Authorization: Bearer $TOKEN" | jq '[.items[].client_name]'
 # Expected: ["Carol Davis"]
 
-# Short search term (1 char) — should return 422
+# Short search term (1 char) — frontend ignores this; backend treats it as no effective search
 curl -s "http://localhost:8000/api/v1/inbox?search=a" \
-  -H "Authorization: Bearer $TOKEN" | jq .detail
-# Expected: 422 validation error
+  -H "Authorization: Bearer $TOKEN" | jq .total
+# Expected: same total as unsearched inbox
+```
+
+---
+
+## Test Inbox Summary
+
+```bash
+curl -s "http://localhost:8000/api/v1/inbox/summary" \
+  -H "Authorization: Bearer $TOKEN" | jq .
+# Expected: { "total_open": 3, "unread_or_new": 3, "high_risk_placeholder": 0 }
 ```
 
 ---

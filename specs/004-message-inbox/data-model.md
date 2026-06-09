@@ -6,13 +6,13 @@
 
 ## Schema Changes
 
-**None.** This feature is read-only. It uses existing tables from Spec 001 (`conversations`, `messages`) and the `status` column added to `messages` in Spec 003. No Alembic migration is required.
+**None.** This feature is read-only. It uses `conversations` and `messages` from Spec 003. No Alembic migration is required.
 
 ---
 
 ## Existing Entities Used
 
-### `conversations` (Spec 001)
+### `conversations` (Spec 003)
 
 Columns relevant to the inbox:
 
@@ -26,7 +26,7 @@ Columns relevant to the inbox:
 | `updated_at` | TIMESTAMPTZ | Primary sort key (DESC) |
 | `created_at` | TIMESTAMPTZ | Fallback display when no messages exist |
 
-### `messages` (Spec 001 + Spec 003)
+### `messages` (Spec 003)
 
 Columns relevant to the inbox:
 
@@ -50,15 +50,17 @@ Columns relevant to the inbox:
 class InboxFilters(BaseModel):
     unread_only: bool = False
     status: ConversationStatus | None = None   # open / closed / escalated / None (all)
-    search: str | None = None                  # min 2 chars when present
+    search: str | None = None                  # blank/omitted means no search
     page: int = Field(default=1, ge=1)
     page_size: int = Field(default=20, ge=1, le=100)
 
-    @validator("search")
-    def search_min_length(cls, v):
-        if v is not None and len(v.strip()) < 2:
-            raise ValueError("Search term must be at least 2 characters")
-        return v.strip() if v else None
+    @field_validator("search")
+    @classmethod
+    def normalize_search(cls, v: str | None):
+        if v is None:
+            return None
+        stripped = v.strip()
+        return stripped or None
 ```
 
 ### Response: Single Inbox Item
@@ -89,6 +91,15 @@ class InboxResponse(BaseModel):
     total_pages: int
 ```
 
+### Response: Inbox Summary
+
+```python
+class InboxSummaryResponse(BaseModel):
+    total_open: int
+    unread_or_new: int
+    high_risk_placeholder: int = 0
+```
+
 ---
 
 ## Inbox Query Logic (SQLAlchemy)
@@ -105,7 +116,10 @@ async def get_inbox(
     # 1. Correlated subquery: latest message per conversation
     latest_msg_sq = (
         select(Message.id)
-        .where(Message.conversation_id == Conversation.id)
+        .where(
+            Message.conversation_id == Conversation.id,
+            Message.tenant_id == tenant_id,
+        )
         .order_by(Message.sent_at.desc())
         .limit(1)
         .correlate(Conversation)
@@ -142,7 +156,7 @@ async def get_inbox(
         stmt = stmt.where(Conversation.status == filters.status)
     if filters.unread_only:
         stmt = stmt.where(unread_sq > 0)
-    if filters.search:
+    if filters.search and len(filters.search) >= 2:
         pattern = f"%{filters.search}%"
         search_exists = exists(
             select(Message.id)
@@ -243,7 +257,7 @@ All filter state is synchronised with URL search params via `react-router`'s `us
 ```
 InboxPage                     /inbox
 ├── InboxFilters              filter controls (read status toggle + status select)
-├── InboxSearch               debounced search input (300ms, min 2 chars)
+├── InboxSearch               debounced search input (300ms; ignores 0-1 char terms)
 ├── InboxList
 │   ├── InboxItem × N         one card per conversation
 │   └── InboxEmptyState       two variants: global-empty / filtered-empty
@@ -252,4 +266,4 @@ InboxPage                     /inbox
 
 Navigation: `InboxItem` click → `navigate('/conversations/' + conversation_id)` (Spec 005 placeholder).
 
-Unread badge: `totalUnread` from `useInbox` is passed to the sidebar nav `NavItem` for the inbox link.
+Unread badge: `GET /api/v1/inbox/summary` provides navbar counts before the inbox page loads. `totalUnread` from `useInbox` should match `summary.unread_or_new` after the inbox fetch completes.

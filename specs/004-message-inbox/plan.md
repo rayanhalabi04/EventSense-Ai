@@ -5,15 +5,15 @@
 **Input**: Feature specification from `specs/004-message-inbox/spec.md`
 
 **Depends on**:
-- [Spec 001 — Multi-Tenant Workspace](../001-multi-tenant-workspace/plan.md): `conversations`, `messages` tables; `TenantScopedRepository`; cross-tenant 403 blocking
+- [Spec 001 — Multi-Tenant Workspace](../001-multi-tenant-workspace/plan.md): tenant foundation, tenant context, tenant-scoped service rules, cross-tenant 403 contract
 - [Spec 002 — Authentication and Roles](../002-auth-and-roles/plan.md): JWT auth; `staff`/`manager` roles; `require_role`; `get_current_tenant_context`
-- [Spec 003 — Message Simulator](../003-message-simulator/plan.md): `messages.status` column (`unread`/`read`); provides the data the inbox displays
+- [Spec 003 — Message Simulator](../003-message-simulator/plan.md): `conversations`, `messages`, and `messages.status` (`unread`/`read`); provides the data the inbox displays
 
 ---
 
 ## Summary
 
-Build a read-only tenant-scoped inbox that lists conversations with latest-message previews, unread indicators, and status badges. A single `GET /api/v1/inbox` endpoint handles filtering (unread/read, conversation status), search (client name, contact, message body), and pagination (20/page). `total_unread` is included in every response to drive a nav badge without extra polling. The frontend `InboxPage` synchronises all filter state to URL search params for browser-nav compatibility. Zero schema changes — this feature is purely a read over existing Spec 001 + 003 data.
+Build a read-only tenant-scoped inbox that lists conversations with latest-message previews, unread indicators, and status badges. `GET /api/v1/inbox` handles filtering (unread/read, conversation status), search (client name, contact, message body), and pagination (20/page). `GET /api/v1/inbox/summary` provides lightweight navbar badge counts before the inbox page loads. The frontend `InboxPage` synchronises filter state to URL search params for browser-nav compatibility. Zero schema changes — this feature reads Spec 003 conversations/messages.
 
 ---
 
@@ -39,7 +39,7 @@ Build a read-only tenant-scoped inbox that lists conversations with latest-messa
 - `tenant_id` from JWT only — inbox query always has `WHERE conversations.tenant_id = :tenant_id`
 - Preview truncated server-side to 100 chars — client never receives full message bodies from the list endpoint
 - `total_unread` always reflects tenant-wide state, independent of active filters
-- Search minimum 2 characters — enforced by Pydantic validator (422 on shorter terms)
+- Frontend ignores 0-1 character search terms; backend treats omitted/blank search as no search
 - Platform Admin receives 403
 
 **Scale/Scope**: MVP — two demo tenants; ILIKE search sufficient; no full-text index needed.
@@ -94,7 +94,7 @@ frontend/
     │   └── InboxPage.tsx              # /inbox route; orchestrates sub-components
     └── components/inbox/
         ├── InboxFilters.tsx           # unread toggle + conversation status select
-        ├── InboxSearch.tsx            # debounced text input (300ms, min 2 chars)
+        ├── InboxSearch.tsx            # debounced text input (300ms, ignores 0-1 char terms)
         ├── InboxList.tsx              # renders list or delegates to InboxEmptyState
         ├── InboxItem.tsx              # single conversation card; click → /conversations/{id}
         ├── InboxEmptyState.tsx        # global-empty vs filtered-empty variants
@@ -116,9 +116,10 @@ frontend/src/components/
 
 | Area | What is built |
 |------|--------------|
-| `inbox.py` (schema) | `InboxFilters` with validators, `InboxItemResponse`, `InboxResponse` |
-| `inbox_service.py` | `get_inbox()` — correlated subquery for latest message + unread count; filter/search/pagination; `total_unread` query; `truncate_preview()` |
+| `inbox.py` (schema) | `InboxFilters` with Pydantic v2 validators, `InboxItemResponse`, `InboxResponse`, `InboxSummaryResponse` |
+| `inbox_service.py` | `get_inbox()` and `get_summary()` — tenant-scoped latest message, unread count, summary count queries; `truncate_preview()` |
 | `GET /api/v1/inbox` | Route handler: `require_role(staff, manager)`; calls `InboxService.get_inbox()`; returns `InboxResponse` |
+| `GET /api/v1/inbox/summary` | Route handler: `require_role(staff, manager)`; returns navbar counts |
 | Router mount | Registered at `/api/v1` prefix in `main.py` |
 | `inbox.ts` (API) | `getInbox(params)` function with typed query params and response |
 | `useInbox.ts` (hook) | Filter state; `useSearchParams` sync; debounced search (300ms); `getInbox` call; `isLoading`/`error` state |
@@ -129,7 +130,7 @@ frontend/src/components/
 | `InboxItem.tsx` | Card/row: client name + contact badge; preview; timestamp; unread dot; status badge; click → `navigate('/conversations/' + id)` |
 | `InboxEmptyState.tsx` | Two variants: global empty ("No messages yet — use the simulator") and filtered empty ("No conversations match your filters — clear filters") |
 | `InboxPagination.tsx` | Previous/next buttons; disabled when on first/last page; "Page X of Y" |
-| Nav badge | `totalUnread` from `useInbox` wired to inbox nav item |
+| Nav badge | `GET /api/v1/inbox/summary` drives the nav item before inbox load; `totalUnread` from `useInbox` updates after inbox fetch |
 | `/conversations/:id` stub | Placeholder route rendering "Conversation detail coming soon" (Spec 005 placeholder) |
 | Integration tests | `test_inbox.py` — 15 tests covering AC-01 through AC-15 |
 
@@ -208,7 +209,7 @@ const setFilter = (key, value) => {
 
 | Parameter | Rule | On violation |
 |-----------|------|-------------|
-| `search` | If present, must be ≥ 2 characters after strip | 422 |
+| `search` | Blank/omitted becomes no search; backend only applies search when length ≥ 2 | 200 |
 | `status` | Must be `open`, `closed`, `escalated`, or absent | 422 |
 | `page` | Integer ≥ 1 | 422 |
 | Auth | Bearer token valid and non-expired | 401 |

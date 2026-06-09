@@ -10,7 +10,7 @@ description: "Task list for Message Inbox feature implementation"
 **Input**: Design documents from `specs/004-message-inbox/`
 
 **Depends on** (assumed complete — do not re-implement):
-- Spec 001 — Multi-Tenant Workspace: `conversations`, `messages` tables; `TenantScopedRepository`; cross-tenant 403
+- Spec 001 — Multi-Tenant Workspace: tenant foundation, tenant-scoped service rules, cross-tenant 403 contract
 - Spec 002 — Authentication and Roles: JWT auth; `staff`/`manager` roles; `require_role`; `get_current_tenant_context`
 - Spec 003 — Message Simulator: `messages.status` column (`unread`/`read`)
 
@@ -40,7 +40,7 @@ description: "Task list for Message Inbox feature implementation"
 
 **⚠️ CRITICAL**: All user story phases depend on this phase completing first.
 
-- [ ] T002 Create `InboxFilters` (query params with `search_min_length` validator), `InboxItemResponse`, and `InboxResponse` Pydantic v2 models in `backend/app/schemas/inbox.py`
+- [ ] T002 Create `InboxFilters` (Pydantic v2 validators; normalize blank search to `None`), `InboxItemResponse`, `InboxResponse`, and `InboxSummaryResponse` in `backend/app/schemas/inbox.py`
 - [ ] T003 [P] Implement `truncate_preview(body: str | None, max_len: int = 100) -> str | None` helper function in `backend/app/services/inbox_service.py`
 
 **Checkpoint**: Schemas importable — Phase 3 can begin.
@@ -65,7 +65,7 @@ description: "Task list for Message Inbox feature implementation"
 
 ### Implementation for User Story 1
 
-- [ ] T009 [US1] Implement `get_inbox(session, tenant_id, filters) -> InboxResponse` in `backend/app/services/inbox_service.py` with: correlated subquery for latest message per conversation; correlated subquery for unread count per conversation; base query joining `conversations LEFT JOIN messages`; `WHERE conversations.tenant_id = :tenant_id`; `ORDER BY updated_at DESC`; `LIMIT page_size OFFSET (page-1)*page_size`; `COUNT(*)` for `total`; `COUNT(DISTINCT conversation_id)` for `total_unread` (tenant-wide, ignores filters); response mapping with `truncate_preview()`
+- [ ] T009 [US1] Implement `get_inbox(session, tenant_id, filters) -> InboxResponse` in `backend/app/services/inbox_service.py` with: correlated subquery for latest message per conversation including `Message.tenant_id == tenant_id`; correlated subquery for unread count; base query joining `conversations LEFT JOIN messages`; `WHERE conversations.tenant_id = :tenant_id`; `ORDER BY updated_at DESC`; pagination; `COUNT(*)` for `total`; `COUNT(DISTINCT conversation_id)` for `total_unread`; response mapping with `truncate_preview()`
 - [ ] T010 [US1] Implement `GET /api/v1/inbox` route handler with `require_role(staff, manager)`, `InboxFilters` query param injection, and `InboxService.get_inbox()` call in `backend/app/api/v1/inbox.py` (depends on T009)
 - [ ] T011 [US1] Mount inbox router at `/api/v1` prefix in `backend/app/main.py` (depends on T010)
 - [ ] T012 [P] [US1] Implement `getInbox(params: InboxQueryParams): Promise<InboxResponse>` Axios call with typed query params and response interface in `frontend/src/api/inbox.ts`
@@ -119,8 +119,8 @@ description: "Task list for Message Inbox feature implementation"
 ### Implementation for User Story 3
 
 - [ ] T030 [US3] Extend `get_inbox()` in `backend/app/services/inbox_service.py` to apply ILIKE search when `filters.search` is set: `OR(conversations.client_name.ilike(pattern), conversations.client_contact.ilike(pattern), EXISTS(messages subquery with body.ilike(pattern) AND tenant_id filter))` (depends on T023)
-- [ ] T031 [P] [US3] Create `InboxSearch` component with a shadcn `Input`, 300ms debounced `onChange`, minimum 2 characters enforced before calling `setSearch`, and X clear button resetting the field in `frontend/src/components/inbox/InboxSearch.tsx`
-- [ ] T032 [US3] Extend `useInbox` with `setSearch(term)` that stores the raw term in local state and only writes to `URLSearchParams` (and resets page to 1) after 300ms debounce; wire `InboxSearch` into `InboxPage` in `frontend/src/hooks/useInbox.ts` and `frontend/src/pages/InboxPage.tsx`
+- [ ] T031 [P] [US3] Create `InboxSearch` component with a shadcn `Input`, 300ms debounced `onChange`, frontend behavior that ignores 0-1 character terms, and X clear button resetting the field in `frontend/src/components/inbox/InboxSearch.tsx`
+- [ ] T032 [US3] Extend `useInbox` with `setSearch(term)` that stores the raw term in local state and only writes 2+ character terms to `URLSearchParams` (or clears the param for 0-1 chars) after 300ms debounce; wire `InboxSearch` into `InboxPage` in `frontend/src/hooks/useInbox.ts` and `frontend/src/pages/InboxPage.tsx`
 
 **Checkpoint**: US1 + US2 + US3 all functional — search narrows list within the active filter scope.
 
@@ -133,7 +133,7 @@ description: "Task list for Message Inbox feature implementation"
 **Independent Test**: Click a conversation row — verify URL changes to `/conversations/{conversation_id}`. Press browser back — verify inbox URL still contains the original `?status=open&search=alice` params.
 
 - [ ] T033 [P] [US4] Create `ConversationDetailPage` placeholder component rendering "Conversation detail coming soon." in `frontend/src/pages/ConversationDetailPage.tsx`
-- [ ] T034 [US4] Register `/conversations/:id` route pointing to `ConversationDetailPage` in `frontend/src/App.tsx`; confirm `InboxItem` click handler calls `navigate('/conversations/' + conversation_id)` (URL state preservation is automatic via `useSearchParams` in `useInbox`) (depends on T033)
+- [ ] T034 [US4] Register `/conversations/:id` route pointing to `ConversationDetailPage` in `frontend/src/App.tsx`; add frontend navigation test that renders an inbox item, clicks the row, and asserts URL changes to `/conversations/{conversation_id}` in `frontend/src/components/inbox/InboxItem.test.tsx` (depends on T033)
 
 **Checkpoint**: US1–US4 all functional — full read-side workflow: list → filter/search → click → navigate back with state.
 
@@ -141,13 +141,13 @@ description: "Task list for Message Inbox feature implementation"
 
 ## Phase 7: User Story 5 — Inbox Shows Correct Unread Count (Priority: P3)
 
-**Goal**: The inbox nav item displays a badge showing the number of tenant conversations with at least one unread message. The count is derived from `total_unread` in every inbox response (computed by a separate tenant-wide query that ignores active filters). Pagination controls allow navigating beyond page 1.
+**Goal**: The inbox nav item displays a badge showing the number of tenant conversations with at least one unread message. The count is fetched from `GET /api/v1/inbox/summary` before the inbox page loads. Pagination controls allow navigating beyond page 1.
 
 **Independent Test**: Inject 2 unread conversations → nav badge shows "2". Apply a status filter that hides one — badge still shows "2" (tenant-wide, not filter-scoped). Inject 25 total conversations → page 1 shows 20, page 2 shows 5.
 
 ### Tests for User Story 5
 
-- [ ] T035 [P] [US5] Write `test_total_unread_reflects_tenant_wide_state_ignoring_filters` (AC-13) in `backend/tests/integration/test_inbox.py` — 2 unread conversations; filter hides one; assert `total_unread=2` regardless of active filter
+- [ ] T035 [P] [US5] Write `test_inbox_summary_returns_tenant_counts` (AC-13) in `backend/tests/integration/test_inbox.py` — 2 unread conversations; `GET /api/v1/inbox/summary` returns `unread_or_new=2`, `total_open`, and `high_risk_placeholder=0`
 - [ ] T036 [P] [US5] Write `test_pagination_page_1_returns_20_items` (AC-15) in `backend/tests/integration/test_inbox.py` — 25 conversations; `?page=1` returns 20 items, `total=25`, `total_pages=2`
 - [ ] T037 [P] [US5] Write `test_pagination_page_2_returns_remaining_items` (AC-15) in `backend/tests/integration/test_inbox.py` — 25 conversations; `?page=2` returns 5 items
 
@@ -155,7 +155,7 @@ description: "Task list for Message Inbox feature implementation"
 
 - [ ] T038 [P] [US5] Create `InboxPagination` component with shadcn `Button` for previous and next; disabled when on first/last page; renders "Page {page} of {totalPages}" in `frontend/src/components/inbox/InboxPagination.tsx`
 - [ ] T039 [US5] Extend `useInbox` with `setPage(n)` writing `page` to URLSearchParams; wire `InboxPagination` into `InboxPage` with `page`, `totalPages`, and `setPage` props in `frontend/src/hooks/useInbox.ts` and `frontend/src/pages/InboxPage.tsx` (depends on T038)
-- [ ] T040 [US5] Wire `totalUnread` from `useInbox` to the inbox nav item badge in `frontend/src/components/NavBar.tsx` (or `Sidebar.tsx`) — show badge when `totalUnread > 0`, hide when 0
+- [ ] T040 [US5] Implement `getInboxSummary()` API call and wire `summary.unread_or_new` to the inbox nav item badge in `frontend/src/components/NavBar.tsx` (or `Sidebar.tsx`) — show badge when count > 0, hide when 0
 
 **Checkpoint**: All 5 user stories functional — full MVP complete.
 
@@ -167,7 +167,7 @@ description: "Task list for Message Inbox feature implementation"
 
 - [ ] T041 [P] Run `pytest backend/tests/integration/test_inbox.py -v` and confirm all 15 AC tests pass (AC-01 through AC-15)
 - [ ] T042 [P] Validate all `quickstart.md` curl flows against the running dev environment: seed 3 conversations, verify inbox response, test unread/status filters, search by client name and body, tenant isolation, platform admin 403, and pagination with 25 conversations
-- [ ] T043 Add 422 error display in the frontend for API validation errors (short search term, invalid status value): catch the Axios error in `useInbox` and surface the error message to the `InboxSearch` component in `frontend/src/hooks/useInbox.ts` and `frontend/src/components/inbox/InboxSearch.tsx`
+- [ ] T043 Add frontend error display for API validation errors such as invalid status/page values; short search terms should be handled client-side by clearing/ignoring the search param, not by surfacing a 422 in `frontend/src/hooks/useInbox.ts`
 
 ---
 
@@ -269,7 +269,7 @@ With multiple developers (after Phase 2 completes):
 - `[USn]` label maps each task to a specific user story for traceability and independent testing
 - No schema migrations — zero `alembic` commands needed for this feature
 - Each user story phase is independently completable and testable before moving to the next
-- `total_unread` is always returned by `get_inbox()` regardless of filters — it drives the US5 nav badge without any extra endpoint
+- `GET /api/v1/inbox/summary` drives the US5 nav badge before the inbox page loads; `total_unread` remains in `get_inbox()` for consistency after page fetch
 - Search is tenant-scoped at the SQL level (`AND messages.tenant_id = :tenant_id` inside the EXISTS subquery) — search cannot cross tenant boundaries
 - Filter state lives in `URLSearchParams` — browser back/refresh always restores the same filtered view (no local state to lose)
 - Inbox is read-only — no `PATCH`, `POST`, or `DELETE` operations in this feature

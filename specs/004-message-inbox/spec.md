@@ -139,7 +139,7 @@ A staff planner sees a badge or indicator on the inbox navigation item showing t
 - Empty state for no conversations (with simulator hint)
 - Filtered/searched empty state (distinct message)
 - Click a row navigates to `/conversations/{id}` (detail page is a stub/placeholder)
-- Unread badge count on inbox navigation item
+- Unread badge count on inbox navigation item via lightweight inbox summary endpoint
 - Pagination: 20 conversations per page
 - Tenant isolation enforced by backend; Platform Admin blocked
 - Backend derives `tenant_id` from authenticated session only
@@ -166,7 +166,7 @@ A staff planner sees a badge or indicator on the inbox navigation item showing t
 | Authenticated session | JWT | Provides `tenant_id` and `role`; never supplied by the client |
 | Read status filter | UI filter control | `all` (default) or `unread` |
 | Conversation status filter | UI filter control | `all` (default), `open`, `closed`, or `escalated` |
-| Search term | Search input | Minimum 2 characters; searched against client name and message bodies |
+| Search term | Search input | Frontend ignores 0-1 character terms; 2+ characters search against client name and message bodies |
 | Page number | Pagination control | Defaults to page 1; 20 items per page |
 
 ---
@@ -176,7 +176,7 @@ A staff planner sees a badge or indicator on the inbox navigation item showing t
 | Output | Description |
 |--------|-------------|
 | Conversation list | Paginated list of tenant conversations with preview data, ordered by `updated_at` descending |
-| Unread badge count | Integer count of conversations with at least one unread message, shown on the nav item |
+| Inbox summary | Tenant-scoped counts for navbar badge, including unread/new count |
 | Filtered/searched list | Subset of conversations matching active filter + search criteria |
 | Empty state | Friendly message when list is empty (global empty or filtered empty — distinct messages) |
 | Navigation target | `/conversations/{id}` URL on row click |
@@ -258,9 +258,9 @@ A staff planner sees a badge or indicator on the inbox navigation item showing t
 
 | Dependency | Type | Notes |
 |------------|------|-------|
-| Spec 001 — Multi-Tenant Workspace | Required | Provides `conversations` and `messages` tables, `tenant_id` isolation, `TenantScopedRepository`, cross-tenant 403 blocking |
+| Spec 001 — Multi-Tenant Workspace | Required | Provides tenant isolation rules, tenant context, and tenant-scoped service pattern |
 | Spec 002 — Authentication and Roles | Required | Provides JWT auth, `staff`/`manager` role access, `require_role` dependency. Platform Admin is blocked from the inbox. |
-| Spec 003 — WhatsApp-Style Message Simulator | Required | Provides the `status` column on `messages` (`unread`/`read`) that drives the unread filter and badge count. The inbox is only useful once the simulator has populated data. |
+| Spec 003 — WhatsApp-Style Message Simulator | Required | Provides `conversations`, `messages`, and the `messages.status` field (`unread`/`read`) that drives the unread filter and badge count. The inbox is only useful once the simulator has populated data. |
 
 ---
 
@@ -293,6 +293,6 @@ The inbox itself does not invoke AI. However, it is the entry point through whic
 - Pagination defaults to page 1, 20 items per page. The page size is fixed for MVP — user-configurable page size is out of scope.
 - The inbox is a read-only page. No status changes, message replies, or task creation happen from the inbox list — those require navigating into the conversation detail.
 - Search triggers after the user has typed at least 2 characters (debounced client-side; enforced server-side by rejecting 0–1 character search terms).
-- The unread badge count is fetched as part of the same inbox API call (a `total_unread` field in the response) — no separate polling endpoint is needed for MVP.
+- The unread badge count is fetched from `GET /api/v1/inbox/summary` before the inbox page loads. The full inbox response also includes `total_unread` and should match the summary count.
 - Conversation preview truncation to 100 characters is applied server-side so the client does not receive full message bodies in the list response.
 - Filter state (active filters + search term) is preserved in the URL as query parameters so the browser back button and page refresh restore the same view.
