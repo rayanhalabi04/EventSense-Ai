@@ -30,6 +30,7 @@ async def simulate_whatsapp_message(
         await SimulatorService.resolve_or_create_conversation(
             session=session,
             tenant_id=ctx.tenant_id,
+            actor_user_id=ctx.user_id,
             client_name=payload.client_name,
             client_contact=payload.client_contact,
             conversation_id=payload.conversation_id,
@@ -38,11 +39,13 @@ async def simulate_whatsapp_message(
     message = await SimulatorService.create_inbound_message(
         session=session,
         tenant_id=ctx.tenant_id,
+        actor_user_id=ctx.user_id,
         conversation=conversation,
         body=payload.body,
     )
     emit_simulator_event(
         SIMULATOR_MESSAGE_CREATED_EVENT,
+        session=session,
         actor_user_id=ctx.user_id,
         tenant_id=ctx.tenant_id,
         resource_type="message",
@@ -61,6 +64,13 @@ async def simulate_whatsapp_message(
         is_new_conversation=is_new_conversation,
         conversation_status=conversation.status.value,
         tenant_id=ctx.tenant_id,
+        intent_label=message.intent_label,
+        intent_confidence=message.intent_confidence,
+        classified_at=message.classified_at,
+        risk_level=message.risk_level,
+        risk_flags=message.risk_flags,
+        risk_reason=message.risk_reason,
+        risk_detected_at=message.risk_detected_at,
     )
 
 

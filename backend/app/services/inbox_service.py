@@ -71,6 +71,13 @@ class InboxService:
                 LatestMessage.body.label("latest_message_body"),
                 LatestMessage.sent_at.label("latest_message_at"),
                 LatestMessage.direction.label("latest_message_direction"),
+                LatestMessage.intent_label,
+                LatestMessage.intent_confidence,
+                LatestMessage.classified_at,
+                LatestMessage.risk_level,
+                LatestMessage.risk_flags,
+                LatestMessage.risk_reason,
+                LatestMessage.risk_detected_at,
                 unread_count.label("unread_count"),
             )
             .outerjoin(LatestMessage, LatestMessage.id == latest_message_id)
@@ -127,6 +134,13 @@ class InboxService:
                 latest_message_preview=truncate_preview(row.latest_message_body),
                 latest_message_at=row.latest_message_at,
                 latest_message_direction=row.latest_message_direction,
+                intent_label=row.intent_label,
+                intent_confidence=row.intent_confidence,
+                classified_at=row.classified_at,
+                risk_level=row.risk_level,
+                risk_flags=row.risk_flags,
+                risk_reason=row.risk_reason,
+                risk_detected_at=row.risk_detected_at,
                 unread_count=row.unread_count or 0,
                 has_unread=(row.unread_count or 0) > 0,
                 conversation_status=row.conversation_status,
@@ -156,7 +170,19 @@ class InboxService:
             )
         ).scalar_one()
         unread_or_new = await InboxService.count_unread_conversations(session, tenant_id)
-        return InboxSummaryResponse(total_open=total_open, unread_or_new=unread_or_new)
+        high_risk = (
+            await session.execute(
+                select(func.count(func.distinct(Message.conversation_id))).where(
+                    Message.tenant_id == tenant_id,
+                    Message.risk_level == "high",
+                )
+            )
+        ).scalar_one()
+        return InboxSummaryResponse(
+            total_open=total_open,
+            unread_or_new=unread_or_new,
+            high_risk=high_risk,
+        )
 
     @staticmethod
     async def count_unread_conversations(session: AsyncSession, tenant_id: UUID) -> int:
@@ -224,6 +250,13 @@ class InboxService:
                 status=conversation.status,
                 source=message.source,
                 direction=message.direction,
+                intent_label=message.intent_label,
+                intent_confidence=message.intent_confidence,
+                classified_at=message.classified_at,
+                risk_level=message.risk_level,
+                risk_flags=message.risk_flags,
+                risk_reason=message.risk_reason,
+                risk_detected_at=message.risk_detected_at,
             )
             for conversation, message in result.all()
         ]

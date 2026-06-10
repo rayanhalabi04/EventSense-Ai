@@ -39,7 +39,10 @@ def upgrade() -> None:
         sa.column("id", sa.Uuid()),
         sa.column("name", sa.String()),
         sa.column("slug", sa.String()),
-        sa.column("kind", sa.String()),
+        # Match the real enum column type so Postgres accepts the value (a plain
+        # String bind is rejected: "column kind is of type tenant_kind but
+        # expression is of type character varying").
+        sa.column("kind", sa.Enum("customer", "platform", name="tenant_kind", create_type=False)),
         sa.column("is_active", sa.Boolean()),
         sa.column("created_at", sa.DateTime(timezone=True)),
         sa.column("updated_at", sa.DateTime(timezone=True)),
@@ -50,7 +53,10 @@ def upgrade() -> None:
         sa.column("tenant_id", sa.Uuid()),
         sa.column("email", sa.String()),
         sa.column("hashed_password", sa.String()),
-        sa.column("role", sa.String()),
+        sa.column(
+            "role",
+            sa.Enum("staff", "manager", "platform_admin", name="user_role", create_type=False),
+        ),
         sa.column("full_name", sa.String()),
         sa.column("is_active", sa.Boolean()),
         sa.column("created_at", sa.DateTime(timezone=True)),

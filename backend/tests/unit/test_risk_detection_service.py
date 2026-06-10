@@ -1,0 +1,58 @@
+from app.services.risk_detection_service import detect_message_risk
+
+
+def test_pricing_request_becomes_low_risk():
+    risk = detect_message_risk("Can you send me package pricing?", "pricing_request")
+
+    assert risk.level == "low"
+    assert risk.flags == []
+    assert risk.reason == "pricing_request is a routine planning request."
+
+
+def test_complaint_becomes_high_risk():
+    risk = detect_message_risk("I am very unhappy with the bad service.", "complaint")
+
+    assert risk.level == "high"
+    assert risk.flags == ["complaint"]
+    assert "complaint" in risk.reason.lower()
+
+
+def test_cancellation_request_becomes_high_risk():
+    risk = detect_message_risk("We need to cancel our booking.", "cancellation_request")
+
+    assert risk.level == "high"
+    assert risk.flags == ["cancellation_risk"]
+    assert "cancel" in risk.reason.lower()
+
+
+def test_guest_count_change_becomes_medium_or_high_based_on_urgency():
+    medium = detect_message_risk("We have 15 more guests now.", "guest_count_change")
+    high = detect_message_risk(
+        "Last minute update for tomorrow: we have 15 more guests.",
+        "guest_count_change",
+    )
+
+    assert medium.level == "medium"
+    assert medium.flags == ["guest_count_change"]
+    assert high.level == "high"
+    assert high.flags == ["guest_count_change"]
+
+
+def test_payment_issue_becomes_medium_or_high_based_on_language():
+    medium = detect_message_risk("Can you check our deposit payment?", "payment_issue")
+    high = detect_message_risk(
+        "This is urgent, our payment is not confirmed and I am angry.",
+        "payment_issue",
+    )
+
+    assert medium.level == "medium"
+    assert medium.flags == ["payment_risk"]
+    assert high.level == "high"
+    assert high.flags == ["payment_risk"]
+
+
+def test_other_unclear_request_becomes_medium_risk():
+    risk = detect_message_risk("I am not sure this request makes sense.", "other")
+
+    assert risk.level == "medium"
+    assert risk.flags == ["unsupported_or_unclear_request"]

@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.conversation import Conversation
 from app.models.message import Message, MessageDirection
 from app.models.tenant import Tenant
+from app.services.intent_classifier_service import INTENT_LABELS
 
 
 pytestmark = pytest.mark.asyncio
@@ -91,8 +92,14 @@ async def test_elegant_sees_own_simulated_message_in_inbox(client: AsyncClient):
     assert rows[0]["status"] == "open"
     assert rows[0]["source"] == "whatsapp_simulator"
     assert rows[0]["direction"] == "inbound"
-    assert rows[0]["intent_label"] is None
-    assert rows[0]["risk_level"] is None
+    assert rows[0]["intent_label"] in INTENT_LABELS
+    assert rows[0]["intent_label"] == "pricing_request"
+    assert 0.0 <= rows[0]["intent_confidence"] <= 1.0
+    assert rows[0]["classified_at"] is not None
+    assert rows[0]["risk_level"] == "low"
+    assert rows[0]["risk_flags"] == []
+    assert rows[0]["risk_reason"] == "pricing_request is a routine planning request."
+    assert rows[0]["risk_detected_at"] is not None
 
 
 async def test_royal_does_not_see_elegant_inbox_message(client: AsyncClient):

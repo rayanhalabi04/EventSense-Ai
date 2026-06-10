@@ -52,6 +52,7 @@ async def authenticate_and_create_token(
     if tenant is None:
         emit_auth_event(
             AUTH_EVENT_LOGIN_FAILURE,
+            session=session,
             email=str(credentials.email),
             tenant_slug=credentials.tenant_slug,
             outcome="blocked",
@@ -67,37 +68,50 @@ async def authenticate_and_create_token(
     if user is None:
         emit_auth_event(
             AUTH_EVENT_LOGIN_FAILURE,
+            session=session,
+            tenant_id=tenant.id,
             email=str(credentials.email),
             tenant_slug=credentials.tenant_slug,
             outcome="blocked",
         )
+        await session.commit()
         raise invalid_credentials_error()
 
     if not user.is_active:
         emit_auth_event(
             AUTH_EVENT_LOGIN_FAILURE_INACTIVE,
+            session=session,
+            tenant_id=tenant.id,
+            user_id=user.id,
             email=str(credentials.email),
             tenant_slug=credentials.tenant_slug,
             outcome="blocked",
         )
+        await session.commit()
         raise invalid_credentials_error()
 
     if not verify_password(credentials.password, user.hashed_password):
         emit_auth_event(
             AUTH_EVENT_LOGIN_FAILURE,
+            session=session,
+            tenant_id=tenant.id,
+            user_id=user.id,
             email=str(credentials.email),
             tenant_slug=credentials.tenant_slug,
             outcome="blocked",
         )
+        await session.commit()
         raise invalid_credentials_error()
 
     emit_auth_event(
         AUTH_EVENT_LOGIN_SUCCESS,
+        session=session,
         user_id=user.id,
         tenant_id=user.tenant_id,
         role=user.role.value,
         outcome="allowed",
     )
+    await session.commit()
     return _token_response(user)
 
 
@@ -138,6 +152,7 @@ async def refresh_token(
 
     emit_auth_event(
         AUTH_EVENT_TOKEN_REFRESH,
+        session=session,
         user_id=user.id,
         tenant_id=tenant.id,
         outcome="allowed",
@@ -148,11 +163,14 @@ async def refresh_token(
 @router.post("/logout")
 async def logout(
     ctx: TenantContext = Depends(get_current_tenant_context),
+    session: AsyncSession = Depends(get_async_session),
 ) -> dict[str, str]:
     emit_auth_event(
         AUTH_EVENT_LOGOUT,
+        session=session,
         user_id=ctx.user_id,
         tenant_id=ctx.tenant_id,
         outcome="allowed",
     )
+    await session.commit()
     return {"message": "Logged out"}

@@ -9,6 +9,7 @@ from app.core.security import hash_password
 from app.models.conversation import Conversation, ConversationStatus
 from app.models.message import Message, MessageDirection, MessageStatus
 from app.models.user import User, UserRole
+from app.services.intent_classifier_service import INTENT_LABELS
 
 
 pytestmark = pytest.mark.asyncio
@@ -59,6 +60,10 @@ async def test_simulator_creates_inbound_message_with_correct_fields(
     data = response.json()
     assert data["is_new_conversation"] is True
     assert data["conversation_status"] == "open"
+    assert data["intent_label"] in INTENT_LABELS
+    assert data["intent_label"] == "pricing_request"
+    assert 0.0 <= data["intent_confidence"] <= 1.0
+    assert data["classified_at"] is not None
 
     message = await db_session.get(Message, UUID(data["message_id"]))
     conversation = await db_session.get(Conversation, UUID(data["conversation_id"]))
@@ -71,6 +76,9 @@ async def test_simulator_creates_inbound_message_with_correct_fields(
     assert message.status is MessageStatus.unread
     assert message.source == "whatsapp_simulator"
     assert message.body == "Hi, can you send me your wedding package prices?"
+    assert message.intent_label == data["intent_label"]
+    assert message.intent_confidence == data["intent_confidence"]
+    assert message.classified_at is not None
 
 
 async def test_simulator_creates_new_conversation_for_unknown_client(client: AsyncClient):
@@ -351,6 +359,7 @@ async def test_simulator_tenant_id_from_jwt_not_body(client: AsyncClient):
 
     assert response.status_code == 201
     assert response.json()["tenant_id"] != royal_tenant_id
+    assert response.json()["intent_label"] in INTENT_LABELS
 
 
 async def test_staff_can_create_simulator_message(

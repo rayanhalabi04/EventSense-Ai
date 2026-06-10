@@ -11,6 +11,7 @@ from app.models.conversation import Conversation, ConversationStatus
 from app.models.message import Message, MessageDirection, MessageStatus
 from app.models.tenant import Tenant
 from app.models.user import UserRole
+from app.services.intent_classifier_service import INTENT_LABELS
 
 
 pytestmark = pytest.mark.asyncio
@@ -133,6 +134,13 @@ async def test_inbox_item_fields_are_complete_and_correct(
         "latest_message_preview": ("x" * 97) + "...",
         "latest_message_at": "2026-06-06T10:00:00",
         "latest_message_direction": "inbound",
+        "intent_label": None,
+        "intent_confidence": None,
+        "classified_at": None,
+        "risk_level": None,
+        "risk_flags": None,
+        "risk_reason": None,
+        "risk_detected_at": None,
         "unread_count": 1,
         "has_unread": True,
         "conversation_status": "open",
@@ -437,7 +445,7 @@ async def test_summary_returns_tenant_counts(client: AsyncClient, db_session: As
     assert response.json() == {
         "total_open": 2,
         "unread_or_new": 2,
-        "high_risk_placeholder": 0,
+        "high_risk": 0,
     }
 
 
@@ -489,4 +497,11 @@ async def test_messages_created_by_simulator_appear_in_inbox(
     item = response.json()["items"][0]
     assert item["conversation_id"] == simulate_response.json()["conversation_id"]
     assert item["latest_message_id"] == simulate_response.json()["message_id"]
+    assert item["intent_label"] in INTENT_LABELS
+    assert item["intent_confidence"] is not None
+    assert item["classified_at"] is not None
+    assert item["risk_level"] == "low"
+    assert item["risk_flags"] == []
+    assert item["risk_reason"] is not None
+    assert item["risk_detected_at"] is not None
     assert item["has_unread"] is True
