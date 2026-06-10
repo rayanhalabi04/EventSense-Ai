@@ -1,0 +1,37 @@
+[
+  {
+    "id": "elegant-deposit-refund",
+    "tenant_slug": "elegant-weddings",
+    "question": "Is the Elegant Weddings deposit refundable?",
+    "expected_document_title": "Elegant Weddings Deposit Policy",
+    "should_refuse": false
+  },
+  {
+    "id": "royal-deposit-refund",
+    "tenant_slug": "royal-events-agency",
+    "question": "Is the Royal Events deposit refundable?",
+    "expected_document_title": "Royal Events Deposit Policy",
+    "should_refuse": false
+  },
+  {
+    "id": "guest-count-deadline",
+    "tenant_slug": "elegant-weddings",
+    "question": "When is the final guest count due?",
+    "expected_document_title": "Elegant Weddings FAQ",
+    "should_refuse": false
+  },
+  {
+    "id": "package-inclusions",
+    "tenant_slug": "royal-events-agency",
+    "question": "What is included in the royal package?",
+    "expected_document_title": "Royal Events Packages",
+    "should_refuse": false
+  },
+  {
+    "id": "unsupported-question",
+    "tenant_slug": "elegant-weddings",
+    "question": "Can the couple arrive by helicopter?",
+    "expected_document_title": null,
+    "should_refuse": true
+  }
+]
