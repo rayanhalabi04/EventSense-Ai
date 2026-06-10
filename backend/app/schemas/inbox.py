@@ -31,6 +31,13 @@ class InboxItemResponse(BaseModel):
     latest_message_preview: str | None
     latest_message_at: datetime | None
     latest_message_direction: MessageDirection | None
+    intent_label: str | None = None
+    intent_confidence: float | None = None
+    classified_at: datetime | None = None
+    risk_level: str | None = None
+    risk_flags: list[str] | None = None
+    risk_reason: str | None = None
+    risk_detected_at: datetime | None = None
     unread_count: int
     has_unread: bool
     conversation_status: ConversationStatus
@@ -49,7 +56,7 @@ class InboxResponse(BaseModel):
 class InboxSummaryResponse(BaseModel):
     total_open: int
     unread_or_new: int
-    high_risk_placeholder: int = 0
+    high_risk: int = 0
 
 
 class InboxMessageRow(BaseModel):
@@ -63,7 +70,12 @@ class InboxMessageRow(BaseModel):
     status: ConversationStatus
     source: str | None
     direction: MessageDirection
-    intent_label: None = None
-    risk_level: None = None
+    intent_label: str | None = None
+    intent_confidence: float | None = None
+    classified_at: datetime | None = None
+    risk_level: str | None = None
+    risk_flags: list[str] | None = None
+    risk_reason: str | None = None
+    risk_detected_at: datetime | None = None
 
     model_config = ConfigDict(from_attributes=True)

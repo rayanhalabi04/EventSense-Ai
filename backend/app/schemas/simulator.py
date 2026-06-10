@@ -37,6 +37,13 @@ class SimulatorMessageResponse(BaseModel):
     is_new_conversation: bool
     conversation_status: str
     tenant_id: UUID
+    intent_label: str | None = None
+    intent_confidence: float | None = None
+    classified_at: datetime | None = None
+    risk_level: str | None = None
+    risk_flags: list[str] | None = None
+    risk_reason: str | None = None
+    risk_detected_at: datetime | None = None
 
 
 class SimulatorConversationItem(BaseModel):
