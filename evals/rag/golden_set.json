@@ -1,36 +1,71 @@
 [
   {
-    "id": "elegant-deposit-refund",
+    "id": "elegant-deposit-policy",
     "tenant_slug": "elegant-weddings",
-    "question": "Is the Elegant Weddings deposit refundable?",
+    "question": "Is the Elegant Weddings deposit refundable after booking confirmation?",
     "expected_document_title": "Elegant Weddings Deposit Policy",
     "should_refuse": false
   },
   {
-    "id": "royal-deposit-refund",
+    "id": "royal-deposit-policy",
     "tenant_slug": "royal-events-agency",
-    "question": "Is the Royal Events deposit refundable?",
+    "question": "Is the Royal Events deposit refundable if I cancel more than thirty days before the event?",
     "expected_document_title": "Royal Events Deposit Policy",
     "should_refuse": false
   },
   {
-    "id": "guest-count-deadline",
+    "id": "elegant-guest-count-deadline",
     "tenant_slug": "elegant-weddings",
-    "question": "When is the final guest count due?",
+    "question": "When must guest count changes be confirmed for Elegant Weddings?",
+    "expected_document_title": "Elegant Weddings Guest Count Policy",
+    "should_refuse": false
+  },
+  {
+    "id": "royal-guest-count-deadline",
+    "tenant_slug": "royal-events-agency",
+    "question": "What is the deadline to update my Royal Events guest count?",
+    "expected_document_title": "Royal Events Guest Count Policy",
+    "should_refuse": false
+  },
+  {
+    "id": "elegant-package-inclusion",
+    "tenant_slug": "elegant-weddings",
+    "question": "What is included in the Elegant Weddings Premium package?",
+    "expected_document_title": "Elegant Weddings Pricing & Packages",
+    "should_refuse": false
+  },
+  {
+    "id": "royal-package-inclusion",
+    "tenant_slug": "royal-events-agency",
+    "question": "What is included in the Royal Events Luxury package?",
+    "expected_document_title": "Royal Events Pricing & Packages",
+    "should_refuse": false
+  },
+  {
+    "id": "elegant-airport-transportation",
+    "tenant_slug": "elegant-weddings",
+    "question": "Does Elegant Weddings provide guest airport transportation?",
     "expected_document_title": "Elegant Weddings FAQ",
     "should_refuse": false
   },
   {
-    "id": "package-inclusions",
+    "id": "royal-airport-transportation",
     "tenant_slug": "royal-events-agency",
-    "question": "What is included in the royal package?",
-    "expected_document_title": "Royal Events Packages",
+    "question": "Can Royal Events arrange VIP guest airport transportation?",
+    "expected_document_title": "Royal Events FAQ",
     "should_refuse": false
   },
   {
     "id": "unsupported-question",
     "tenant_slug": "elegant-weddings",
     "question": "Can the couple arrive by helicopter?",
+    "expected_document_title": null,
+    "should_refuse": true
+  },
+  {
+    "id": "tenant-isolation-elegant-cannot-see-royal-lighting",
+    "tenant_slug": "elegant-weddings",
+    "question": "Is stage lighting and a bridal entrance setup available?",
     "expected_document_title": null,
     "should_refuse": true
   }

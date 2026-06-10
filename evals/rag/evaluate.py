@@ -8,26 +8,81 @@ from app.services.embedding_service import embedding_service, tokenize_for_retri
 ROOT = Path(__file__).resolve().parent
 GOLDEN_SET = ROOT / "golden_set.json"
 
+# Offline retrieval corpus. These short, fictional snippets mirror the demo RAG
+# document packs in demo_data/rag_documents/ so the golden set can be scored
+# without a running database. They are intentionally different between tenants to
+# exercise tenant-scoped isolation.
 CORPUS = [
     {
         "tenant_slug": "elegant-weddings",
         "document_title": "Elegant Weddings Deposit Policy",
-        "text": "Elegant Weddings deposits are refundable within seven days of payment.",
+        "text": (
+            "The Elegant Weddings booking deposit is non-refundable after booking "
+            "confirmation. The deposit confirms the wedding date only after payment "
+            "is received and recorded."
+        ),
+    },
+    {
+        "tenant_slug": "elegant-weddings",
+        "document_title": "Elegant Weddings Guest Count Policy",
+        "text": (
+            "Elegant Weddings guest count changes must be confirmed at least ten "
+            "days before the event. Increases after the deadline require manager "
+            "approval and may affect catering availability."
+        ),
+    },
+    {
+        "tenant_slug": "elegant-weddings",
+        "document_title": "Elegant Weddings Pricing & Packages",
+        "text": (
+            "The Elegant Weddings Premium package includes decoration, catering "
+            "coordination, and photography coordination. The Gold package includes "
+            "planning support and vendor coordination."
+        ),
     },
     {
         "tenant_slug": "elegant-weddings",
         "document_title": "Elegant Weddings FAQ",
-        "text": "Final guest count is due fourteen days before the wedding.",
+        "text": (
+            "Elegant Weddings does not provide guest airport transportation unless "
+            "it is added as a custom service. The final balance is due fourteen days "
+            "before the wedding."
+        ),
     },
     {
         "tenant_slug": "royal-events-agency",
         "document_title": "Royal Events Deposit Policy",
-        "text": "Royal Events deposits become non-refundable after thirty days.",
+        "text": (
+            "The Royal Events deposit is partially refundable if cancellation "
+            "happens more than thirty days before the event, and non-refundable if "
+            "cancellation happens within thirty days of the event."
+        ),
     },
     {
         "tenant_slug": "royal-events-agency",
-        "document_title": "Royal Events Packages",
-        "text": "The royal package includes venue coordination, lighting, catering, and decor.",
+        "document_title": "Royal Events Guest Count Policy",
+        "text": (
+            "Royal Events guest count changes are allowed up to seven days before "
+            "the event. Increases after the seven day deadline require catering and "
+            "venue approval."
+        ),
+    },
+    {
+        "tenant_slug": "royal-events-agency",
+        "document_title": "Royal Events Pricing & Packages",
+        "text": (
+            "The Royal Events Luxury package includes decoration, catering, "
+            "lighting, and bridal entrance setup. The Royal Signature package "
+            "includes premium theme design and stage lighting."
+        ),
+    },
+    {
+        "tenant_slug": "royal-events-agency",
+        "document_title": "Royal Events FAQ",
+        "text": (
+            "Royal Events can arrange VIP guest airport transportation only as a "
+            "paid add-on. The final balance is due ten days before the event."
+        ),
     },
 ]
 
