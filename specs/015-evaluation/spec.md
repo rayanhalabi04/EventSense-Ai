@@ -410,3 +410,27 @@ This feature is a **consumer/observer** of features 001–014: it invokes them o
 - Triggering is privileged (developer/owner); managers/instructors are read-only; reads are side-effect-free.
 - Exports (JSON/CSV/Markdown) and the optional dashboard are the report/presentation evidence and contain no secrets/prompts/cross-tenant data.
 - Evaluation is out-of-band and never pollutes the production inbox/replies or auto-sends/auto-creates anything.
+
+---
+
+## Advanced Requirements Update (Updated Brief — 2026-06)
+
+The updated brief confirms the evaluation coverage (classifier, RAG, agent/tool workflow, guardrail/red-team, tenant isolation — all already specified as areas above) and **adds a Docker smoke-test result** as a required evaluation artifact, tying evaluation to the dockerized stack (Spec 017) and the CI gates (Spec 018).
+
+### Functional Requirements (additional)
+
+- **FR-021**: The harness MUST record a **Docker smoke test** result as a ninth area (`docker_smoke`) or tracked artifact: bring the stack up via `docker compose`, run a minimal health/pipeline check (DB + pgvector reachable, backend healthy, a message classified, a tenant-scoped RAG query refuses with no docs), and capture pass/fail + logs.
+- **FR-022**: The Docker smoke result MUST be **exportable** (JSON/Markdown) and surfaced like other runs (summary + pass/fail), with no secrets/env values leaked into the artifact.
+- **FR-023**: The `agent_workflow` suite MUST evaluate the **bounded risky-case agent** (Spec 012 Advanced): correct action recommendation on high-risk cases, **tool-call bound respected**, human-review fallback on bound/error, and **no autonomous side effects**.
+- **FR-024**: The `guardrail` suite MUST run the curated **red-team prompt test set** (Spec 014 Advanced, `evals/guardrails/`) as its source corpus.
+
+### Acceptance Criteria (additional)
+
+| # | Criterion | Verification Method |
+|---|-----------|---------------------|
+| AC-23 | A Docker smoke-test result is produced (stack up, health + minimal pipeline check) and stored/exportable with pass/fail | CI/local run + artifact review |
+| AC-24 | The `agent_workflow` suite asserts bounded tool calls, human-review fallback, and no autonomous side effects | Integration test |
+| AC-25 | The `guardrail` suite consumes the versioned red-team set and yields per-case pass/fail | Suite run |
+| AC-26 | No secrets/env/prompts/cross-tenant data appear in the Docker smoke artifact or any export | Redaction scan |
+
+> Docker smoke ties Spec 015 to **Spec 017 (Dockerized Stack)** and **Spec 018 (CI Evaluation Gates)**, which runs these suites as gates.

@@ -451,3 +451,27 @@ This feature is a **cross-cutting safety layer**: it wraps the 009→010 generat
 - The MVP detection is rule/heuristic-based (injection/disclosure/secret patterns) plus grounding/no-source checks plus PII regex; precision favors *holding* over *silently dropping* for borderline cases.
 - `tenant_id`/`user_id`/`role` always come from the JWT; client-supplied tenant is ignored.
 - Reads are tenant-scoped and role-gated: managers read tenant-wide decisions, staff read message-scoped decisions.
+
+---
+
+## Advanced Requirements Update (Updated Brief — 2026-06)
+
+The updated brief requires a maintained **red-team prompt test set** as a first-class artifact of the guardrail feature (already exercised by Spec 015's `guardrail` suite). All existing guardrail behavior (prompt-injection refusal, system-prompt-disclosure refusal, cross-tenant-leakage prevention, unsupported-answer refusal, PII redaction) is unchanged; this adds the curated adversarial corpus that proves it.
+
+### Functional Requirements (additional)
+
+- **FR-021**: The feature MUST ship a versioned **red-team prompt test set** (fixtures) covering, at minimum: prompt injection / instruction override, system-prompt / hidden-rule disclosure, cross-tenant data requests (by name and by id), unsupported-answer / invented-policy probes, secret/token-exfiltration attempts, and PII-bearing inputs.
+- **FR-022**: Each red-team case MUST declare its **expected guardrail outcome** (category + action: `refuse` / `require_human_review` / `redact`) so it is a deterministic pass/fail check.
+- **FR-023**: The red-team set MUST be **synthetic/redacted** (no real secrets, JWTs, system-prompt text, or real client PII) and stored where Spec 015's `guardrail` suite can load it (`evals/guardrails/`).
+- **FR-024**: The red-team set MUST be **runnable as a suite** (via Spec 015) producing per-case pass/fail evidence, and SHOULD be extended whenever a new bypass class is discovered.
+
+### Acceptance Criteria (additional)
+
+| # | Criterion | Verification Method |
+|---|-----------|---------------------|
+| AC-23 | A versioned red-team prompt test set exists covering injection, disclosure, cross-tenant, unsupported/invented-policy, secret-exfil, and PII | Fixture review |
+| AC-24 | Each case declares an expected category + action and runs as a deterministic pass/fail | Suite run (Spec 015 guardrail area) |
+| AC-25 | The red-team corpus contains no real secrets/prompts/PII (synthetic/redacted only) | Redaction scan |
+| AC-26 | Running the suite produces per-case pass/fail evidence usable in the report | Spec 015 export review |
+
+> Fixtures live at `evals/guardrails/` (the existing `guardrails_red_team.md` is the seed); they are consumed by Spec 015's `guardrail` evaluation area and run as a gate in Spec 018.
