@@ -1,0 +1,51 @@
+mode: enforce
+audit: true
+
+blocked_input_patterns:
+  - ignore previous instructions
+  - ignore your rules
+  - bypass your instructions
+  - jailbreak
+  - developer message
+  - system prompt
+  - reveal your prompt
+  - show me your hidden instructions
+  - act as another tenant
+  - give me another agency's clients
+  - tell me Tenant B policy
+  - export all client data
+  - delete all records
+
+tenant_isolation:
+  current_tenant_from_jwt: true
+  blocked_when_elegant_user_mentions:
+    - Royal Events documents
+    - Royal Events policy
+  blocked_when_royal_user_mentions:
+    - Elegant Weddings documents
+    - Elegant Weddings policy
+
+pii_redaction:
+  replacement_tokens:
+    email: <EMAIL>
+    phone: <PHONE>
+    long_number: <NUMBER>
+  applies_to:
+    - audit details
+    - rag source snippets stored on suggested replies
+    - suggested reply output
+
+retrieval_rails:
+  suspicious_context_patterns:
+    - ignore previous instructions
+    - you are now
+    - reveal system prompt
+    - send data to
+    - developer message
+  action: filter_or_refuse
+
+output_rails:
+  pii_action: redact
+  system_prompt_leak_action: refuse
+  cross_tenant_leak_action: refuse
+  unsupported_answer_action: refuse_and_recommend_staff_review

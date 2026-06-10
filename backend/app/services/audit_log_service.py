@@ -35,6 +35,14 @@ AUDIT_EVENT_SUGGESTED_REPLY_REFUSED_NO_SOURCE = "suggested_reply.refused_no_sour
 AUDIT_EVENT_SUGGESTED_REPLY_APPROVED = "suggested_reply.approved"
 AUDIT_EVENT_SUGGESTED_REPLY_EDITED = "suggested_reply.edited"
 AUDIT_EVENT_SUGGESTED_REPLY_REJECTED = "suggested_reply.rejected"
+AUDIT_EVENT_GUARDRAIL_INPUT_BLOCKED = "guardrail_input_blocked"
+AUDIT_EVENT_GUARDRAIL_INPUT_REDACTED = "guardrail_input_redacted"
+AUDIT_EVENT_GUARDRAIL_RETRIEVAL_REDACTED = "guardrail_retrieval_redacted"
+AUDIT_EVENT_GUARDRAIL_RETRIEVAL_BLOCKED = "guardrail_retrieval_blocked"
+AUDIT_EVENT_GUARDRAIL_OUTPUT_REDACTED = "guardrail_output_redacted"
+AUDIT_EVENT_GUARDRAIL_OUTPUT_BLOCKED = "guardrail_output_blocked"
+AUDIT_EVENT_GUARDRAIL_CROSS_TENANT_BLOCKED = "guardrail_cross_tenant_blocked"
+AUDIT_EVENT_GUARDRAIL_SYSTEM_PROMPT_BLOCKED = "guardrail_system_prompt_blocked"
 
 
 def _json_safe(value: object) -> object:

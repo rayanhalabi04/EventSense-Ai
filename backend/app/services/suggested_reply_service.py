@@ -21,10 +21,18 @@ from app.core.config import settings
 from app.models.conversation import Conversation
 from app.models.message import Message
 from app.models.suggested_reply import SuggestedReply, SuggestedReplyStatus
+from app.models.tenant import Tenant
 from app.services.audit_log_service import (
     AUDIT_EVENT_SUGGESTED_REPLY_GENERATED,
     AUDIT_EVENT_SUGGESTED_REPLY_REFUSED_NO_SOURCE,
     AuditLogService,
+)
+from app.services.guardrail_service import (
+    SAFE_REFUSAL,
+    GuardrailResult,
+    apply_guardrails_to_suggested_reply,
+    audit_guardrail_event,
+    check_input_guardrails,
 )
 from app.services.rag_service import RagResult, retrieve
 
@@ -235,18 +243,64 @@ async def generate_suggested_reply(
     and ``message``. RAG retrieval is always scoped to ``tenant_id`` so a reply
     can only ever cite the current tenant's documents.
     """
-    rag_result = await retrieve(
-        session,
-        query=message.body,
-        tenant_id=tenant_id,
-        top_k=5,
-        actor_user_id=user_id,
-    )
-    generated = generate_reply_text(
-        rag_result=rag_result,
-        message_body=message.body,
-        risk_level=message.risk_level,
-    )
+    tenant = await session.get(Tenant, tenant_id)
+    tenant_slug = tenant.slug if tenant is not None else None
+    guardrail_events: list[tuple[str, GuardrailResult]] = []
+
+    input_result = check_input_guardrails(message.body, tenant_slug)
+    if input_result.flags:
+        guardrail_events.append(("input", input_result))
+
+    if not input_result.allowed:
+        generated = GeneratedReply(
+            suggested_text=SAFE_REFUSAL,
+            answer_supported=False,
+            refusal_reason=input_result.reason or SAFE_REFUSAL,
+            source_document_ids=[],
+            rag_sources=[],
+            generation_method=_resolve_generation_method(),
+        )
+    else:
+        rag_result = await retrieve(
+            session,
+            query=input_result.sanitized_text or message.body,
+            tenant_id=tenant_id,
+            top_k=5,
+            actor_user_id=user_id,
+            audit=False,
+            enforce_guardrails=False,
+        )
+        generated = generate_reply_text(
+            rag_result=rag_result,
+            message_body=input_result.sanitized_text or message.body,
+            risk_level=message.risk_level,
+        )
+        (
+            suggested_text,
+            rag_sources,
+            answer_supported,
+            refusal_reason,
+            output_events,
+        ) = apply_guardrails_to_suggested_reply(
+            suggested_text=generated.suggested_text,
+            rag_sources=generated.rag_sources,
+            answer_supported=generated.answer_supported,
+            refusal_reason=generated.refusal_reason,
+            tenant_slug=tenant_slug,
+        )
+        guardrail_events.extend(("retrieval" if event.flags and any(flag.startswith("pii_in_retrieved") or flag.startswith("suspicious_retrieved") or flag.startswith("cross_tenant_context") for flag in event.flags) else "output", event) for event in output_events)
+        generated = GeneratedReply(
+            suggested_text=suggested_text,
+            answer_supported=answer_supported,
+            refusal_reason=refusal_reason,
+            source_document_ids=[
+                str(source["document_id"])
+                for source in rag_sources
+                if str(source["document_id"]) in generated.source_document_ids
+            ],
+            rag_sources=rag_sources,
+            generation_method=generated.generation_method,
+        )
 
     reply = SuggestedReply(
         tenant_id=tenant_id,
@@ -263,6 +317,21 @@ async def generate_suggested_reply(
     )
     session.add(reply)
     await session.flush()
+
+    for rail_type, event in guardrail_events:
+        audit_guardrail_event(
+            session,
+            tenant_id=tenant_id,
+            actor_user_id=user_id,
+            rail_type=rail_type,
+            result=event,
+            resource_type="suggested_reply",
+            resource_id=reply.id,
+            conversation_id=conversation.id,
+            message_id=message.id,
+            suggested_reply_id=reply.id,
+            original_text=message.body if rail_type == "input" else generated.suggested_text,
+        )
 
     source_titles = [str(source.get("document_title")) for source in generated.rag_sources]
     details: dict[str, object] = {
