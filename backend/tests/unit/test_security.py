@@ -10,6 +10,12 @@ from app.core.security import create_access_token, decode_jwt, hash_password, ve
 from app.models.user import UserRole
 
 
+def tamper_jwt_signature(token: str) -> str:
+    header, payload, signature = token.split(".")
+    replacement = "A" if signature[0] != "A" else "B"
+    return ".".join((header, payload, replacement + signature[1:]))
+
+
 def test_hash_and_verify_password_roundtrip():
     hashed = hash_password("right-password")
 
@@ -73,7 +79,7 @@ def test_decode_jwt_rejects_expired_token():
 
 def test_decode_jwt_rejects_tampered_signature():
     token = create_access_token(sub=uuid4(), tenant_id=uuid4(), role=UserRole.staff.value)
-    tampered = token[:-1] + ("a" if token[-1] != "a" else "b")
+    tampered = tamper_jwt_signature(token)
 
     with pytest.raises(HTTPException) as exc:
         decode_jwt(tampered)

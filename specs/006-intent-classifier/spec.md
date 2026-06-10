@@ -180,7 +180,7 @@ A staff or manager user can correct a classification — change the label and/or
 
 1. **Client message arrives** — The simulator (Spec 003) creates a new inbound message in a tenant.
 2. **Classification triggered** — Immediately after the message is persisted, the system invokes the classification service for that message.
-3. **Model predicts** — The TF-IDF + Logistic Regression model vectorises the message body and predicts a label with a probability/confidence.
+3. **Model predicts** — The production model (a **Calibrated Linear SVM**; baseline: TF-IDF + Logistic Regression) vectorises the message body and predicts a label with a calibrated probability/confidence. See **Advanced Requirements Update** below for model selection and artifact details.
 4. **Threshold applied** — If confidence ≥ threshold, the predicted label is kept and `status` = `classified`. Otherwise label = `other` and `status` = `needs_review`.
 5. **Result stored** — A `ClassificationResult` is saved, linked to the message, scoped to the tenant.
 6. **Surfaced to users** — The label appears as a badge in the inbox and as a label + confidence on the message detail page. Needs-review items are visually distinguished.
@@ -249,13 +249,13 @@ A staff or manager user can correct a classification — change the label and/or
 | Spec 003 — Message Simulator | Required | Creates inbound messages; classification hooks into this creation path |
 | Spec 004 — Message Inbox | Required | Surface for the intent badge |
 | Spec 005 — Message Detail Page | Required | Surface for the intent label + confidence (replaces the AI Intent placeholder panel) |
-| TF-IDF + Logistic Regression model | Required | First-generation classifier; trained model artifact loaded by the backend |
+| Calibrated Linear SVM model (baseline: TF-IDF + Logistic Regression) | Required | Production classifier; trained **offline**, saved as a **joblib** artifact + **model card**, loaded by the backend. See Advanced Requirements Update. |
 
 ---
 
 ## AI Behavior
 
-- **Model**: TF-IDF vectoriser + Logistic Regression classifier (the first EventSense model). It outputs a probability distribution over the eleven labels; the top label and its probability become the prediction and confidence.
+- **Model**: TF-IDF vectoriser + **Calibrated Linear SVM** classifier (the final selected EventSense model; the earlier TF-IDF + Logistic Regression is retained as the documented **baseline**). It outputs a calibrated probability distribution over the eleven labels; the top label and its probability become the prediction and confidence. Model selection, training, artifact, and documentation requirements are in the **Advanced Requirements Update** section.
 - **Single label**: exactly one label is stored per message (the argmax), never multiple.
 - **Confidence threshold**: a configurable cutoff (default documented in research). Below it → `other` + `needs_review`. This makes the model conservative and routes uncertainty to humans.
 - **Determinism**: the same model version + same input produces the same label and confidence (no randomness at inference).
@@ -324,10 +324,47 @@ A staff or manager user can correct a classification — change the label and/or
 
 ## Assumptions
 
-- A trained TF-IDF + Logistic Regression model artifact (vectoriser + classifier + label mapping) is available to the backend at a known path, versioned by `model_version`.
+- A trained model artifact (vectoriser + **Calibrated Linear SVM** classifier + label mapping; baseline TF-IDF + Logistic Regression also retained) is **trained offline** and saved as a **joblib** artifact available to the backend at a known path, versioned by `model_version` and traceable by content hash.
 - The confidence threshold has a sensible documented default and is configurable without code changes.
 - Classification runs synchronously within the message-creation request flow for MVP (a background queue is a post-MVP optimisation), but is wrapped so its failure cannot fail message creation.
 - Each message has at most one classification (one-to-one). Re-classification overwrites the existing model-generated result in place.
 - Only inbound messages are classified; outbound messages are agency-authored and need no intent.
 - The detail page's "AI Intent" placeholder panel from Spec 005 is replaced by the real intent display in this feature; the other five placeholder panels remain placeholders.
 - Confidence is the model's top-class probability in `[0, 1]`.
+
+---
+
+## Advanced Requirements Update (Updated Brief — 2026-06)
+
+The updated brief finalizes the production intent model and the artifacts that document it. TF-IDF + Logistic Regression (the model described in the body) is retained as the **baseline**; the **final selected model is a Calibrated Linear SVM**. Inference, threshold routing, tenant scoping, the review flow, and all existing FR/AC are unchanged — only the underlying estimator and its documentation artifacts change.
+
+### Model Selection
+
+- **Baseline**: TF-IDF vectoriser → `LogisticRegression` (multi-class, `predict_proba`). Metrics recorded in `data/intent_classifier/reports/baseline_metrics.json`.
+- **Final selected model**: TF-IDF vectoriser → **Calibrated Linear SVM** (`LinearSVC` wrapped in `CalibratedClassifierCV` so calibrated probabilities back the confidence threshold). Selected for best held-out macro-F1 while keeping deterministic, CPU-only, small-artifact inference.
+- Both are scikit-learn pipelines; the calibrated SVM exposes `predict_proba`, so the existing confidence-threshold routing (`>= INTENT_CONFIDENCE_THRESHOLD` → label, else `other` / `needs_review`) is preserved unchanged.
+
+### Functional Requirements (additional)
+
+- **FR-014**: The system MUST serve the **Calibrated Linear SVM** as the production classifier, with TF-IDF + Logistic Regression retained as the documented baseline for comparison.
+- **FR-015**: The model MUST be **trained offline** (out-of-band script/notebook; no training in the request path) and saved as a **joblib** artifact (vectoriser + calibrated classifier + label mapping) loaded by the backend at startup.
+- **FR-016**: The artifact MUST be accompanied by a **model card** documenting the algorithm, training-data reference (DATA_CARD / Spec 015), intended use, the eleven labels, evaluation metrics, latency, limitations, and the confidence-threshold behavior.
+- **FR-017**: The backend MUST record the loaded artifact's **content hash** (e.g., SHA-256) and `model_version` at load time so the served model is traceable and provably matches the evaluated artifact.
+- **FR-018**: The reports / model card MUST document **evaluation metrics** (accuracy, macro-F1, weighted-F1, per-class P/R/F1, confusion matrix — final vs. baseline) and **inference latency** (per message), produced by the offline training/eval run and consumed by Spec 015.
+
+### Acceptance Criteria (additional)
+
+| # | Criterion | Verification Method |
+|---|-----------|---------------------|
+| AC-16 | Production classifier is the Calibrated Linear SVM; baseline LogReg metrics recorded for comparison | Reports review (baseline + final metrics) |
+| AC-17 | Model loaded from a joblib artifact; backend records its content hash + `model_version` at load | Integration test: assert hash + version recorded |
+| AC-18 | A MODEL_CARD documenting algorithm, metrics, latency, labels, and limitations exists alongside the artifact | Artifact/doc review |
+| AC-19 | Calibrated probabilities feed the existing confidence threshold unchanged (low-confidence → `other`/`needs_review`) | Integration test (existing AC-02/AC-03 still pass with the SVM) |
+
+### Artifacts
+
+- Trained artifact: `data/intent_classifier/` (joblib model: vectoriser + calibrated SVM + label map).
+- Reports: `data/intent_classifier/reports/` — `baseline_metrics.json` (TF-IDF + LogReg, present), final metrics JSON, confusion matrix.
+- Model card: `data/intent_classifier/reports/MODEL_CARD.md` (algorithm, metrics, latency, artifact hash, `model_version`, limitations).
+
+> `INTENT_CLASSIFIER_ARTIFACT_PATH` / `INTENT_CLASSIFIER_MODEL_VERSION` (config) point at the **calibrated SVM** artifact in production; the baseline artifact remains available for comparison.

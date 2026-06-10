@@ -17,6 +17,12 @@ def auth_headers(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
+def tamper_jwt_signature(token: str) -> str:
+    header, payload, signature = token.split(".")
+    replacement = "A" if signature[0] != "A" else "B"
+    return ".".join((header, payload, replacement + signature[1:]))
+
+
 async def login(
     client: AsyncClient,
     email: str = "admin@elegant-weddings.demo",
@@ -153,7 +159,7 @@ async def test_missing_token_returns_401_missing_token_code(client: AsyncClient)
 
 async def test_tampered_token_returns_401_invalid_token_code(client: AsyncClient):
     token = (await login(client)).json()["access_token"]
-    tampered = token[:-1] + ("a" if token[-1] != "a" else "b")
+    tampered = tamper_jwt_signature(token)
 
     response = await client.get("/auth/me", headers=auth_headers(tampered))
 

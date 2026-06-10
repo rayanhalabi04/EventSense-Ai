@@ -162,3 +162,28 @@ PostgreSQL composite constraints are optional for the MVP, but service-layer val
 | JWT authentication | Required | Implemented in Spec 002; this feature defines the tenant context contract it must satisfy. |
 | PostgreSQL + SQLAlchemy + Alembic | Required | Shared schema with row-level tenant ownership columns. |
 | Later tenant-owned features | Future | Must use the rules in this spec when adding conversations, messages, documents, tasks, escalations, suggested replies, audit logs, RAG, and evaluation data. |
+
+---
+
+## Advanced Requirements Update (Updated Brief — 2026-06)
+
+These requirements harden the tenant-isolation foundation per the updated brief. They do not change the MVP isolation model; they make the existing guarantees explicit and add an optional future-hardening path.
+
+### Functional Requirements (additional)
+
+- **FR-011**: Tenant context MUST be derived **exclusively** from the authenticated JWT for every tenant-owned operation; no endpoint, service, or background job may accept `tenant_id` from a request body, query string, header, or frontend state.
+- **FR-012**: Every tenant-owned table MUST carry a non-null `tenant_id`, and tenant filtering MUST be enforced at the **repository/service layer** via a shared tenant-scoped query helper — not left to individual call sites.
+- **FR-013**: Vector retrieval (pgvector, Spec 009) MUST apply the same repository-level `tenant_id` filter as relational reads; no retrieval path, including similarity search, can return another tenant's rows.
+- **FR-014**: The test suite MUST include explicit **cross-tenant tests** for every tenant-owned entity (read, write, ID-guess, and vector retrieval) asserting Tenant A can never reach Tenant B data (404/403, empty result sets, zero cross-tenant chunks).
+- **FR-015** (future hardening, optional): PostgreSQL **Row-Level Security (RLS)** policies MAY be added as defense-in-depth beneath the application-level filter. RLS is **not required** for the MVP; repository filtering remains the primary boundary. When added, policies key on a per-session `tenant_id` GUC set from the JWT.
+
+### Acceptance Criteria (additional)
+
+| # | Criterion | Verification Method |
+|---|-----------|---------------------|
+| AC-11 | A centralized repository/service tenant filter is applied to all tenant-owned reads/writes | Code review + repository test |
+| AC-12 | pgvector retrieval is tenant-filtered; a Tenant A query returns zero Tenant B chunks | Integration test (Spec 009) |
+| AC-13 | Cross-tenant tests exist for every tenant-owned entity (incl. vector retrieval) and pass | Test-suite review |
+| AC-14 | Optional RLS, when enabled, blocks cross-tenant rows even if the app filter is bypassed; disabled by default, documented as future hardening | Migration/integration test (only when RLS flag on) |
+
+> RLS is recorded here as **future hardening** (previously under Out of Scope); the MVP boundary stays at the JWT-derived, repository-level tenant filter.

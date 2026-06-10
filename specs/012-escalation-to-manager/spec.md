@@ -387,3 +387,41 @@ No client message is sent, the suggested reply is not approved/sent, and no task
 - The detail page's "Escalate" placeholder from Spec 005 is replaced by the real escalation control + recommendation; if a "Create Task" control (Spec 011) exists, both are independent.
 - Audit logging is a future integration; this feature records actor + action + timestamps for that feature to consume but does not implement logging.
 - The AI summary is optional convenience; escalation creation never depends on it.
+
+---
+
+## Advanced Requirements Update (Updated Brief — 2026-06): Risky-Case Agent
+
+The updated brief introduces a **focused, bounded risky-case agent** that assists staff on high-risk messages by orchestrating existing tenant-scoped tools. The agent lives at the convergence of risk (007) → RAG (009) → reply (010) → task (011) → escalation (012), which is why it is specified here. It is **assistive, bounded, and non-autonomous**: it proposes actions and a human confirms. It is explicitly **not** a general or large multi-agent system.
+
+### Scope
+
+- The agent runs **only on risky cases** (Spec 007 `risk_level = high` or `escalation_recommended = true`), never on routine low-risk messages.
+- The agent has **exactly four tools**, all tenant-scoped and reusing existing services:
+  - `rag_search` — tenant-scoped retrieval (Spec 009).
+  - `suggest_reply` — draft a grounded reply (Spec 010); never auto-sent.
+  - `create_follow_up_task` — propose a follow-up task (Spec 011).
+  - `escalate_to_manager` — create an escalation (this spec, staff-confirmed).
+- **Bounded tool calls**: a hard maximum number of tool invocations per run (`AGENT_MAX_TOOL_CALLS`, small default e.g. 5); exceeding it stops the agent and falls back to human review.
+
+### Functional Requirements (additional)
+
+- **FR-017**: The agent MUST operate only on risky cases and MUST be invoked explicitly (a staff action or the risky-case path), never as a blocking step in message creation.
+- **FR-018**: The agent MUST be limited to the four tools above; it MUST NOT call any other service, send a client message, or act outside the tenant boundary.
+- **FR-019**: Tool calls MUST be **bounded** by `AGENT_MAX_TOOL_CALLS`; on reaching the bound, on tool error, or on low confidence, the agent MUST **fall back to human review** — surface its partial findings and create nothing without confirmation.
+- **FR-020**: `suggest_reply` output MUST pass Spec 014 guardrails (grounding/safety) before display and MUST remain human-approved (never auto-sent); `create_follow_up_task` and `escalate_to_manager` MUST require human confirmation in the MVP default (no autonomous create).
+- **FR-021**: **Every agent action** (each tool call — inputs summary, tool, outcome — plus the final recommendation) MUST be **logged** (Spec 013 audit log + an agent-run record), tenant-scoped and redacted (no secrets/PII/cross-tenant data).
+- **FR-022**: The agent's guardrails MUST be **inescapable**: it cannot bypass the tenant filter, cannot exceed the call bound, and cannot perform an action a human role could not perform directly.
+
+### Acceptance Criteria (additional)
+
+| # | Criterion | Verification Method |
+|---|-----------|---------------------|
+| AC-19 | Agent runs only on high-risk / escalation-recommended cases; skipped for low-risk | Integration test |
+| AC-20 | Agent is limited to the four tools; no other side effects occur | Code/integration test |
+| AC-21 | Tool calls are bounded; exceeding the bound triggers human-review fallback (no autonomous create) | Integration test: force > max calls → fallback |
+| AC-22 | Every tool call + final recommendation is logged (audit + agent-run), tenant-scoped and redacted | Integration test: assert log entries |
+| AC-23 | Agent-suggested reply is guardrail-checked and human-approved; task/escalation require confirmation | Integration test |
+| AC-24 | Agent cannot cross the tenant boundary via any tool (`rag_search`/`escalate`/`task`) | Integration test (cross-tenant attempt) |
+
+> The agent is the "agent/tool workflow" subject already evaluated by Spec 015 (`agent_workflow` area) and gated by Spec 014 guardrails + logged via Spec 013 audit. It could graduate to its own spec later; for the MVP it is a bounded assist layer over Specs 009–012. **Config**: `AGENT_ENABLED`, `AGENT_MAX_TOOL_CALLS`, `AGENT_REQUIRE_HUMAN_CONFIRM` (default true).

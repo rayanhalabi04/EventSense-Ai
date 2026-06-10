@@ -350,3 +350,27 @@ A staff planner opens a message and sees the RAG sources retrieved for that mess
 - The relevance threshold and top-k have documented defaults and are configurable.
 - The detail page's "Knowledge Sources" placeholder from Spec 005 is replaced by the real sources display in this feature; remaining placeholders (Suggested Reply, Create Task, Escalate) stay placeholders.
 - Determinism assumes a fixed corpus + embedding model; tie-breaks use `(score desc, document_id, chunk_index)`.
+
+---
+
+## Advanced Requirements Update (Updated Brief — 2026-06)
+
+The updated brief requires at least one **advanced retrieval improvement beyond basic dense (single-vector cosine) retrieval**. EventSense AI adopts **two**: tenant- and document-aware **metadata filtering** and **improved, structure-aware chunking**. Storage stays pgvector; tenant-scoped retrieval, source grounding, and the `no_source` refuse path are unchanged.
+
+### Functional Requirements (additional)
+
+- **FR-017**: Retrieval MUST support **metadata filtering** alongside vector similarity: candidates may be narrowed by structured chunk/document metadata (`document_type`, `enabled`, `status = processed`, optional tags such as `pricing`/`policy`/`availability`) **with** the tenant filter, so similarity search runs over the relevant, allowed subset only. The `tenant_id` filter remains mandatory and non-bypassable.
+- **FR-018**: Chunking MUST use an **improved, structure-aware strategy** (sentence/section-boundary-aware splitting with bounded size + overlap, avoiding mid-sentence cuts) rather than naive fixed-character slicing, and MUST persist chunk metadata (section/heading, `document_type`) used by FR-017.
+- **FR-019**: Each retrieved source MUST carry the metadata used for filtering so the detail page and downstream grounding can show *why* a source matched; metadata MUST never include another tenant's data.
+- **FR-020**: The advanced retrieval path MUST remain **deterministic** for a fixed corpus + embedding model + query + filter set (stable ordering incl. tie-breaks), preserving existing AC-17.
+
+### Acceptance Criteria (additional)
+
+| # | Criterion | Verification Method |
+|---|-----------|---------------------|
+| AC-19 | Metadata filtering narrows candidates (e.g., `document_type=policy`) while still tenant-scoped; off-type chunks excluded | Integration test |
+| AC-20 | Structure-aware chunking yields boundary-aligned chunks with persisted section/type metadata (no mid-sentence splits beyond overlap) | Unit test on the chunker |
+| AC-21 | A metadata-filtered query returns only same-tenant, in-filter sources; zero cross-tenant chunks | Integration test |
+| AC-22 | Advanced retrieval remains deterministic for a fixed corpus + query + filter | Integration test |
+
+> This supersedes the prior "re-ranking / hybrid BM25+vector — out of scope" note **only** to the extent of adding metadata filtering + improved chunking; learned re-rankers and external vector DBs remain out of scope.
