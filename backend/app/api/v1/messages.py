@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, status
@@ -31,6 +32,7 @@ async def create_message(
         direction=direction,
         body=payload.body,
         sender_user_id=sender_user_id,
+        sent_at=datetime.now(timezone.utc),
     )
     session.add(message)
     await session.commit()

@@ -33,3 +33,7 @@ class Conversation(TimestampMixin, Base):
 
     tenant = relationship("Tenant", back_populates="conversations")
     messages = relationship("Message", back_populates="conversation", cascade="all, delete-orphan")
+    tasks = relationship("Task", back_populates="conversation", cascade="all, delete-orphan")
+    escalations = relationship(
+        "Escalation", back_populates="conversation", cascade="all, delete-orphan"
+    )

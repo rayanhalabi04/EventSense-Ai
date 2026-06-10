@@ -16,8 +16,11 @@ depends_on = None
 
 
 def upgrade() -> None:
+    # Let create_table below create the enum exactly once. Previously this
+    # migration ALSO called tenant_kind.create() explicitly, so create_table's
+    # _on_table_create hook re-emitted CREATE TYPE and Postgres errored with
+    # DuplicateObject ("type tenant_kind already exists") on a fresh database.
     tenant_kind = sa.Enum("customer", "platform", name="tenant_kind")
-    tenant_kind.create(op.get_bind(), checkfirst=True)
 
     op.create_table(
         "tenants",

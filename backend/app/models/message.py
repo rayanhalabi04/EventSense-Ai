@@ -2,7 +2,7 @@ import enum
 from datetime import datetime
 from uuid import UUID, uuid4
 
-from sqlalchemy import DateTime, Enum, ForeignKey, Index, String, Text
+from sqlalchemy import DateTime, Enum, Float, ForeignKey, Index, JSON, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
 from sqlalchemy.types import Uuid
@@ -42,6 +42,13 @@ class Message(Base):
     )
     body: Mapped[str] = mapped_column(Text, nullable=False)
     source: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    intent_label: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    intent_confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    classified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    risk_level: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    risk_flags: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    risk_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    risk_detected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     sender_user_id: Mapped[UUID | None] = mapped_column(
         Uuid(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )

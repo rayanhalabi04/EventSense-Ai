@@ -16,8 +16,10 @@ depends_on = None
 
 
 def upgrade() -> None:
+    # Let create_table below create the enum exactly once (the explicit
+    # user_role.create() here plus create_table's own CREATE TYPE caused a
+    # DuplicateObject "type user_role already exists" error on a fresh database).
     user_role = sa.Enum("staff", "manager", "platform_admin", name="user_role")
-    user_role.create(op.get_bind(), checkfirst=True)
 
     op.create_table(
         "users",
