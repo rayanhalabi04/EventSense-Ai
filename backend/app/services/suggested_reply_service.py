@@ -1,0 +1,301 @@
+"""Suggested reply generation.
+
+Suggested replies are drafted for *staff review only* — they are never sent to
+clients automatically. A reply is grounded strictly in the tenant's own RAG
+sources; if retrieval returns nothing, the service produces a polite refusal
+that recommends staff/manager review instead of inventing policy.
+
+The default generator is a deterministic, template-based builder
+(``template_v1``) so the feature works without any paid LLM API and so tests are
+fully reproducible. A hosted-LLM generator can be added later behind
+``settings.llm_model`` without changing the public surface of this module — see
+``_resolve_generation_method``.
+"""
+import re
+from dataclasses import dataclass
+from uuid import UUID
+
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.config import settings
+from app.models.conversation import Conversation
+from app.models.message import Message
+from app.models.suggested_reply import SuggestedReply, SuggestedReplyStatus
+from app.services.audit_log_service import (
+    AUDIT_EVENT_SUGGESTED_REPLY_GENERATED,
+    AUDIT_EVENT_SUGGESTED_REPLY_REFUSED_NO_SOURCE,
+    AuditLogService,
+)
+from app.services.rag_service import RagResult, retrieve
+
+
+GENERATION_METHOD_TEMPLATE = "template_v1"
+
+REFUSAL_TEXT = (
+    "Hi, thank you for your message. I could not find enough information in our "
+    "uploaded company documents to answer this confidently. I'll ask a staff "
+    "member to review this and follow up, and a manager can step in if needed."
+)
+REFUSAL_REASON = (
+    "No supporting information was found in the tenant's uploaded documents for "
+    "this question."
+)
+
+GREETING = "Hi, thank you for your message."
+ESCALATION_SENTENCE = (
+    "If you would like us to review a special case, I can escalate this to a "
+    "manager for review."
+)
+
+_ESCALATION_KEYWORDS = (
+    "cancel",
+    "cancellation",
+    "refund",
+    "refundable",
+    "non-refundable",
+    "dispute",
+    "complaint",
+    "lawyer",
+)
+
+
+@dataclass(frozen=True)
+class GeneratedReply:
+    suggested_text: str
+    answer_supported: bool
+    refusal_reason: str | None
+    source_document_ids: list[str]
+    rag_sources: list[dict[str, object]]
+    generation_method: str
+
+
+def _resolve_generation_method() -> str:
+    """Return the active generation method.
+
+    Today this is always the deterministic template generator. When a hosted
+    LLM is configured (``settings.llm_model``) a future ``llm_v1`` generator can
+    be selected here; the template generator remains the safe fallback so tests
+    never depend on an external API.
+    """
+    return GENERATION_METHOD_TEMPLATE
+
+
+def _first_sentence_containing(text: str, keywords: tuple[str, ...]) -> str | None:
+    for raw in re.split(r"(?<=[.!?])\s+", text.replace("\n", " ")):
+        candidate = raw.strip()
+        if not candidate:
+            continue
+        low = candidate.lower()
+        if any(keyword in low for keyword in keywords):
+            return candidate
+    return None
+
+
+def _needs_escalation(message_body: str, content: str, risk_level: str | None) -> bool:
+    if risk_level == "high":
+        return True
+    haystack = f"{message_body} {content}".lower()
+    return any(keyword in haystack for keyword in _ESCALATION_KEYWORDS)
+
+
+def build_supported_reply(
+    *,
+    sources: list[dict[str, object]],
+    message_body: str,
+    risk_level: str | None,
+) -> str:
+    """Build a grounded, WhatsApp-style reply from RAG sources only.
+
+    Every fact in the returned text traces back to ``sources``; no policy is
+    invented. The wording stays concise and friendly for staff review.
+    """
+    primary = sources[0]
+    primary_title = str(primary.get("document_title", "company documents"))
+    primary_type = str(primary.get("document_type", ""))
+    combined = " ".join(str(source.get("content", "")) for source in sources[:3])
+    combined_low = combined.lower()
+
+    parts: list[str] = [GREETING]
+
+    if "non-refundable" in combined_low and "booking confirmation" in combined_low:
+        parts.append(
+            "According to our policy, the booking deposit is non-refundable after "
+            "booking confirmation."
+        )
+    elif ("partially refundable" in combined_low or "partial refund" in combined_low) and (
+        "30 days" in combined_low or "thirty days" in combined_low
+    ):
+        parts.append(
+            "According to our policy, deposits may be partially refundable when "
+            "cancellation happens more than 30 days before the event. The final "
+            "refund depends on committed costs and manager review."
+        )
+    elif "guest count" in combined_low:
+        sentence = _first_sentence_containing(combined, ("guest count",))
+        if sentence is not None:
+            parts.append(f"According to our {primary_title}: {sentence}")
+        else:
+            parts.append(
+                f"According to our {primary_title}, there is a guest count "
+                "confirmation deadline; please confirm with us before it passes."
+            )
+        parts.append(
+            "If the deadline has already passed, I can ask a manager to review "
+            "your options."
+        )
+    elif primary_type in ("pricing", "package"):
+        sentence = _first_sentence_containing(
+            combined, ("package", "price", "pricing", "include", "cost")
+        )
+        if sentence is not None:
+            parts.append(f"Based on our {primary_title}: {sentence}")
+        else:
+            parts.append(
+                f"I can share details from our {primary_title}; a staff member "
+                "will confirm the exact pricing and inclusions for your date."
+            )
+    else:
+        sentence = _first_sentence_containing(
+            combined, tuple(word for word in message_body.lower().split() if len(word) > 3)
+        )
+        if sentence is None:
+            sentence = _first_sentence_containing(combined, ("policy", "the", "is")) or combined[:240]
+        parts.append(f"According to our {primary_title}: {sentence}")
+
+    if _needs_escalation(message_body, combined, risk_level):
+        parts.append(ESCALATION_SENTENCE)
+
+    return " ".join(part.strip() for part in parts if part.strip())
+
+
+def _compact_sources(rag_result: RagResult) -> list[dict[str, object]]:
+    return [
+        {
+            "document_id": str(source.document_id),
+            "document_title": source.document_title,
+            "document_type": source.document_type,
+            "content": source.content,
+            "score": source.score,
+        }
+        for source in rag_result.sources
+    ]
+
+
+def generate_reply_text(
+    *,
+    rag_result: RagResult,
+    message_body: str,
+    risk_level: str | None,
+) -> GeneratedReply:
+    """Pure, deterministic generation step (no DB, no auth) for easy testing."""
+    method = _resolve_generation_method()
+    if not rag_result.answer_supported or not rag_result.sources:
+        return GeneratedReply(
+            suggested_text=REFUSAL_TEXT,
+            answer_supported=False,
+            refusal_reason=rag_result.refusal_reason or REFUSAL_REASON,
+            source_document_ids=[],
+            rag_sources=[],
+            generation_method=method,
+        )
+
+    compact = _compact_sources(rag_result)
+    source_document_ids: list[str] = []
+    for source in compact:
+        document_id = str(source["document_id"])
+        if document_id not in source_document_ids:
+            source_document_ids.append(document_id)
+
+    text = build_supported_reply(
+        sources=compact,
+        message_body=message_body,
+        risk_level=risk_level,
+    )
+    return GeneratedReply(
+        suggested_text=text,
+        answer_supported=True,
+        refusal_reason=None,
+        source_document_ids=source_document_ids,
+        rag_sources=compact,
+        generation_method=method,
+    )
+
+
+async def generate_suggested_reply(
+    session: AsyncSession,
+    *,
+    tenant_id: UUID,
+    user_id: UUID,
+    conversation: Conversation,
+    message: Message,
+) -> SuggestedReply:
+    """Generate, persist, and audit a suggested reply for ``message``.
+
+    The caller is responsible for tenant-ownership checks on ``conversation``
+    and ``message``. RAG retrieval is always scoped to ``tenant_id`` so a reply
+    can only ever cite the current tenant's documents.
+    """
+    rag_result = await retrieve(
+        session,
+        query=message.body,
+        tenant_id=tenant_id,
+        top_k=5,
+        actor_user_id=user_id,
+    )
+    generated = generate_reply_text(
+        rag_result=rag_result,
+        message_body=message.body,
+        risk_level=message.risk_level,
+    )
+
+    reply = SuggestedReply(
+        tenant_id=tenant_id,
+        conversation_id=conversation.id,
+        message_id=message.id,
+        suggested_text=generated.suggested_text,
+        status=SuggestedReplyStatus.draft,
+        source_document_ids=generated.source_document_ids,
+        rag_sources=generated.rag_sources,
+        answer_supported=generated.answer_supported,
+        refusal_reason=generated.refusal_reason,
+        generation_method=generated.generation_method,
+        created_by_user_id=user_id,
+    )
+    session.add(reply)
+    await session.flush()
+
+    source_titles = [str(source.get("document_title")) for source in generated.rag_sources]
+    details: dict[str, object] = {
+        "suggested_reply_id": reply.id,
+        "conversation_id": conversation.id,
+        "message_id": message.id,
+        "answer_supported": generated.answer_supported,
+        "generation_method": generated.generation_method,
+        "source_document_ids": generated.source_document_ids,
+        "source_document_titles": source_titles,
+        "user_id": user_id,
+    }
+    if generated.answer_supported:
+        AuditLogService.record(
+            session,
+            tenant_id=tenant_id,
+            actor_user_id=user_id,
+            event_type=AUDIT_EVENT_SUGGESTED_REPLY_GENERATED,
+            resource_type="suggested_reply",
+            resource_id=reply.id,
+            details=details,
+        )
+    else:
+        AuditLogService.record(
+            session,
+            tenant_id=tenant_id,
+            actor_user_id=user_id,
+            event_type=AUDIT_EVENT_SUGGESTED_REPLY_REFUSED_NO_SOURCE,
+            resource_type="suggested_reply",
+            resource_id=reply.id,
+            details={**details, "refusal_reason": generated.refusal_reason},
+        )
+
+    await session.commit()
+    await session.refresh(reply)
+    return reply

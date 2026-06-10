@@ -76,6 +76,66 @@ Stop the stack and remove database volumes:
 docker compose down -v
 ```
 
+### AI Suggested Replies
+
+Suggested replies are staff-review drafts only. They are never sent to clients
+automatically. The backend generates them from the latest inbound client message
+by default, grounds the wording in the authenticated tenant's RAG documents, and
+returns a refusal/staff-review draft when uploaded documents do not support an
+answer.
+
+The feature exposes:
+
+- `POST /api/v1/conversations/{conversation_id}/suggested-reply`
+- `GET /api/v1/conversations/{conversation_id}/suggested-replies`
+- `GET /api/v1/suggested-replies/{reply_id}`
+- `PATCH /api/v1/suggested-replies/{reply_id}`
+- `GET /api/v1/conversations/{conversation_id}/detail`, which includes the
+  latest `suggested_reply` when one exists
+
+Manual demo flow:
+
+```bash
+# Use 8088 if you want to match scripts/seed_rag_documents.sh's default.
+API_HOST_PORT=8088 docker compose up -d --build
+curl http://localhost:8088/health
+
+API_BASE_URL=http://localhost:8088 scripts/seed_rag_documents.sh
+
+TOKEN="$(
+  curl -s -X POST http://localhost:8088/auth/token \
+    -H 'Content-Type: application/json' \
+    -d '{"email":"admin@elegant-weddings.demo","password":"demo-password-1","tenant_slug":"elegant-weddings"}' \
+  | python3 -c 'import json,sys; print(json.load(sys.stdin)["access_token"])'
+)"
+
+SIMULATED="$(
+  curl -s -X POST http://localhost:8088/api/v1/simulator/messages \
+    -H "Authorization: Bearer ${TOKEN}" \
+    -H 'Content-Type: application/json' \
+    -d '{"client_name":"Suggested Reply Demo","client_contact":"+96170100200","body":"Is the deposit refundable after booking confirmation?"}'
+)"
+CONVERSATION_ID="$(printf '%s' "${SIMULATED}" | python3 -c 'import json,sys; print(json.load(sys.stdin)["conversation_id"])')"
+
+curl -s -X POST "http://localhost:8088/api/v1/conversations/${CONVERSATION_ID}/suggested-reply" \
+  -H "Authorization: Bearer ${TOKEN}" | python3 -m json.tool
+
+curl -s "http://localhost:8088/api/v1/conversations/${CONVERSATION_ID}/detail" \
+  -H "Authorization: Bearer ${TOKEN}" | python3 -m json.tool
+
+REPLY_ID="<reply id from generate response>"
+curl -s -X PATCH "http://localhost:8088/api/v1/suggested-replies/${REPLY_ID}" \
+  -H "Authorization: Bearer ${TOKEN}" \
+  -H 'Content-Type: application/json' \
+  -d '{"status":"approved"}' | python3 -m json.tool
+```
+
+For an unsupported question, create another simulator message such as
+`Can you book my honeymoon flight?` and generate a suggested reply for that
+conversation. The response should have `answer_supported=false`, mention that
+there is not enough information in uploaded company documents, and ask staff to
+review instead of inventing a policy.
+
 ### Ports
 
 PostgreSQL is mapped to host port `5433` to avoid conflicts with a local Mac PostgreSQL on `5432`. Inside Docker, services still use `postgres:5432`.

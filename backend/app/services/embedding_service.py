@@ -20,6 +20,7 @@ _STOP_WORDS = {
     "is",
     "it",
     "me",
+    "my",
     "of",
     "on",
     "or",

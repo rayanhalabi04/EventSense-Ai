@@ -14,6 +14,7 @@ from app.api.v1 import (
     messages,
     rag,
     simulator,
+    suggested_replies,
     tasks,
     tenants,
 )
@@ -38,6 +39,9 @@ app.include_router(conversations.router, prefix="/api/v1/conversations", tags=["
 app.include_router(messages.router, prefix="/api/v1/conversations", tags=["messages"])
 app.include_router(tasks.router, prefix="/api/v1/tasks", tags=["tasks"])
 app.include_router(escalations.router, prefix="/api/v1/escalations", tags=["escalations"])
+app.include_router(
+    suggested_replies.router, prefix="/api/v1/suggested-replies", tags=["suggested-replies"]
+)
 app.include_router(documents.router, prefix="/api/v1/documents", tags=["documents"])
 app.include_router(rag.router, prefix="/api/v1/rag", tags=["rag"])
 app.include_router(simulator.router, prefix="/api/v1/simulator", tags=["simulator"])

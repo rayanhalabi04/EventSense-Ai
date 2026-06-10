@@ -30,6 +30,11 @@ AUDIT_EVENT_DOCUMENT_CHUNKED_INDEXED = "document.chunked_indexed"
 AUDIT_EVENT_RAG_QUERY_EXECUTED = "rag.query_executed"
 AUDIT_EVENT_RAG_NO_SOURCE_REFUSAL = "rag.no_source_refusal"
 AUDIT_EVENT_RAG_RETRIEVAL_RETURNED_SOURCES = "rag.retrieval_returned_sources"
+AUDIT_EVENT_SUGGESTED_REPLY_GENERATED = "suggested_reply.generated"
+AUDIT_EVENT_SUGGESTED_REPLY_REFUSED_NO_SOURCE = "suggested_reply.refused_no_source"
+AUDIT_EVENT_SUGGESTED_REPLY_APPROVED = "suggested_reply.approved"
+AUDIT_EVENT_SUGGESTED_REPLY_EDITED = "suggested_reply.edited"
+AUDIT_EVENT_SUGGESTED_REPLY_REJECTED = "suggested_reply.rejected"
 
 
 def _json_safe(value: object) -> object:
