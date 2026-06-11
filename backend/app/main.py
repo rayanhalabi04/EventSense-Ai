@@ -1,5 +1,6 @@
 from fastapi import FastAPI
 from fastapi import HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.api import auth as root_auth
@@ -18,10 +19,21 @@ from app.api.v1 import (
     tasks,
     tenants,
 )
+from app.core.config import settings
 from app.core.exceptions import ForbiddenError, forbidden_error_handler
 
 
 app = FastAPI(title="EventSense AI API")
+
+# Allow the browser-based frontend to call the API during local development.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.cors_allow_origins_list,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 app.add_exception_handler(ForbiddenError, forbidden_error_handler)
 
 

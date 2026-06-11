@@ -17,6 +17,9 @@ class Settings(BaseSettings):
     redis_host: str = "localhost"
     redis_port: int = 6379
     redis_url: str = "redis://localhost:6379/0"
+    memory_enabled: bool = False
+    short_term_memory_ttl_seconds: int = 604800
+    short_term_memory_max_messages: int = 10
     jwt_secret_key: str = "change-me-in-local-env"
     jwt_algorithm: str = "HS256"
     access_token_expire_minutes: int = 60
@@ -37,6 +40,13 @@ class Settings(BaseSettings):
         "app/ml/intent_classifier/artifacts/eventsense_tfidf_logreg_baseline.joblib"
     )
     intent_classifier_model_version: str = "tfidf-logreg-baseline"
+    # Comma-separated list of origins allowed to call the API from a browser
+    # (the EventSense AI frontend dev/preview servers by default).
+    cors_allow_origins: str = "http://localhost:5173,http://localhost:4173"
+
+    @property
+    def cors_allow_origins_list(self) -> list[str]:
+        return [origin.strip() for origin in self.cors_allow_origins.split(",") if origin.strip()]
 
     model_config = SettingsConfigDict(
         env_file=(REPO_ROOT / ".env", BACKEND_DIR / ".env"),

@@ -42,6 +42,7 @@ from app.services.guardrail_service import (
 )
 from app.services.llm_service import LLMClient, LLMReplyRequest, get_llm_client
 from app.schemas.suggested_reply import SuggestedReplyUpdate
+from app.services.conversation_memory_service import ConversationMemoryService
 from app.services.rag_service import RagResult, retrieve
 
 
@@ -322,6 +323,7 @@ async def generate_reply_text_with_optional_llm(
     risk_level: str | None,
     risk_reason: str | None,
     tenant_slug: str | None,
+    conversation_memory: list[dict[str, str]] | None = None,
     llm_client_factory: Callable[[], LLMClient | None] | None = None,
 ) -> GeneratedReply:
     template_reply = generate_reply_text(
@@ -344,6 +346,7 @@ async def generate_reply_text_with_optional_llm(
                 risk_level=risk_level,
                 risk_reason=risk_reason,
                 rag_sources=template_reply.rag_sources,
+                conversation_memory=conversation_memory or [],
             )
         )
         llm_text = response.text.strip()
@@ -421,6 +424,10 @@ async def generate_suggested_reply(
             audit=False,
             enforce_guardrails=False,
         )
+        memory_messages = await ConversationMemoryService().load_recent(
+            tenant_id=tenant_id,
+            conversation_id=conversation.id,
+        )
         generated = await generate_reply_text_with_optional_llm(
             rag_result=rag_result,
             message_body=input_result.sanitized_text or message.body,
@@ -428,6 +435,15 @@ async def generate_suggested_reply(
             risk_level=message.risk_level,
             risk_reason=message.risk_reason,
             tenant_slug=tenant_slug,
+            conversation_memory=[
+                {
+                    "message_id": item.message_id,
+                    "direction": item.direction,
+                    "body": item.body,
+                    "sent_at": item.sent_at,
+                }
+                for item in memory_messages
+            ],
             llm_client_factory=llm_client_factory,
         )
         (

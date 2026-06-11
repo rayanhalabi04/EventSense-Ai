@@ -110,6 +110,27 @@ out, errors, returns an empty response, or produces unsafe output, EventSense AI
 keeps the existing template fallback and records `llm_fallback_reason` in the
 generated suggested-reply audit details.
 
+Short-term conversation memory is optional and Redis-backed. By default
+`MEMORY_ENABLED=false`, so the backend does not use Redis in request flows. When
+enabled, simulator inbound messages are copied into a tenant-scoped,
+conversation-scoped Redis list with this key shape:
+
+```text
+tenant:{tenant_id}:conversation:{conversation_id}:memory
+```
+
+Suggested replies load the most recent memory entries and include them in the
+LLM prompt as recent conversation context. The deterministic template fallback
+does not require memory, and Redis read/write failures are logged without
+failing simulator or suggested-reply requests.
+
+```env
+REDIS_URL=redis://redis:6379/0
+MEMORY_ENABLED=true
+SHORT_TERM_MEMORY_TTL_SECONDS=604800
+SHORT_TERM_MEMORY_MAX_MESSAGES=10
+```
+
 Manual demo flow:
 
 ```bash

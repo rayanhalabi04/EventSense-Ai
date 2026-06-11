@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Protocol
 
 import httpx
@@ -15,6 +15,7 @@ class LLMReplyRequest:
     risk_level: str | None
     risk_reason: str | None
     rag_sources: list[dict[str, object]]
+    conversation_memory: list[dict[str, str]] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -174,12 +175,24 @@ def _user_prompt(request: LLMReplyRequest) -> str:
                 ]
             )
         )
+    memory_blocks = []
+    for index, message in enumerate(request.conversation_memory, start=1):
+        memory_blocks.append(
+            "\n".join(
+                [
+                    f"Message {index} ({message.get('direction', 'unknown')}):",
+                    str(message.get("body", "")),
+                ]
+            )
+        )
     return "\n\n".join(
         [
             f"Client message:\n{request.client_message}",
             f"Detected intent: {request.intent_label or 'unknown'}",
             f"Risk level: {request.risk_level or 'unknown'}",
             f"Risk reason: {request.risk_reason or 'none'}",
+            "Recent conversation memory:\n"
+            + ("\n\n".join(memory_blocks) if memory_blocks else "No recent memory available."),
             "Tenant document sources:\n" + "\n\n".join(source_blocks),
             "Draft one suggested reply using only these sources. The reply is not sent automatically; staff must review it before sending.",
         ]
