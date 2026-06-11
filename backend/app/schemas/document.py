@@ -24,6 +24,15 @@ class DocumentCreate(BaseModel):
         return value
 
 
+class DocumentUpload(BaseModel):
+    filename: str
+    document_type: DocumentType
+    content_text: str
+    title: str | None = None
+
+    model_config = ConfigDict(extra="ignore")
+
+
 class DocumentUpdate(BaseModel):
     title: str | None = None
     document_type: DocumentType | None = None
