@@ -81,6 +81,35 @@ async def test_simulator_creates_inbound_message_with_correct_fields(
     assert message.classified_at is not None
 
 
+async def test_simulator_stores_inbound_message_memory(
+    client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    token = await elegant_token(client)
+    recorded = []
+
+    class FakeMemoryService:
+        async def store_inbound_message(self, *, tenant_id, message):
+            recorded.append((tenant_id, message))
+
+    monkeypatch.setattr(
+        "app.api.v1.simulator.ConversationMemoryService",
+        lambda: FakeMemoryService(),
+    )
+
+    response = await client.post(
+        "/api/v1/simulator/messages",
+        headers=auth_headers(token),
+        json={"client_name": "Maya Haddad", "body": "Please remember this."},
+    )
+
+    assert response.status_code == 201
+    assert len(recorded) == 1
+    tenant_id, message = recorded[0]
+    assert str(tenant_id) == response.json()["tenant_id"]
+    assert str(message.id) == response.json()["message_id"]
+
+
 async def test_simulator_creates_new_conversation_for_unknown_client(client: AsyncClient):
     token = await elegant_token(client)
 

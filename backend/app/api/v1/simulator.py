@@ -15,6 +15,7 @@ from app.services.simulator_service import (
     SimulatorService,
     emit_simulator_event,
 )
+from app.services.conversation_memory_service import ConversationMemoryService
 
 
 router = APIRouter()
@@ -58,6 +59,10 @@ async def simulate_whatsapp_message(
     await session.commit()
     await session.refresh(conversation)
     await session.refresh(message)
+    await ConversationMemoryService().store_inbound_message(
+        tenant_id=ctx.tenant_id,
+        message=message,
+    )
     return SimulatorMessageResponse(
         message_id=message.id,
         conversation_id=conversation.id,
