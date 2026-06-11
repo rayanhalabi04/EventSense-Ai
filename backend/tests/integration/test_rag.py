@@ -8,11 +8,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.document import DocumentChunk
 from app.models.audit_log import AuditLog
 from app.models.tenant import Tenant
+from app.repositories.document_chunk_repository import DocumentChunkRepository
 from app.services.audit_log_service import (
     AUDIT_EVENT_GUARDRAIL_CROSS_TENANT_BLOCKED,
     AUDIT_EVENT_GUARDRAIL_INPUT_REDACTED,
     AUDIT_EVENT_GUARDRAIL_SYSTEM_PROMPT_BLOCKED,
 )
+from app.services.embedding_service import embedding_service
 
 
 pytestmark = pytest.mark.asyncio
@@ -160,6 +162,30 @@ async def test_rag_query_returns_relevant_source_for_same_tenant(client: AsyncCl
     assert result["sources"][0]["document_id"] == document["id"]
     assert result["sources"][0]["document_type"] == "deposit_policy"
     assert "refundable" in result["sources"][0]["content"]
+
+
+async def test_sqlite_repository_fallback_returns_relevant_chunk(
+    client: AsyncClient,
+    db_session: AsyncSession,
+):
+    token = await login(client)
+    document = await create_document(
+        client,
+        token,
+        title="Fallback Deposit Policy",
+        document_type="deposit_policy",
+        content_text="Fallback deposit payment is refundable within seven days.",
+    )
+
+    ranked = await DocumentChunkRepository(db_session).search_similar_chunks(
+        UUID(str(document["tenant_id"])),
+        query_embedding=embedding_service.embed_text("Is fallback deposit refundable?"),
+        top_k=5,
+    )
+
+    assert ranked
+    assert ranked[0].retrieval_backend == "python_cosine_fallback"
+    assert ranked[0].chunk.document_id == UUID(str(document["id"]))
 
 
 async def test_rag_query_does_not_return_other_tenant_documents(client: AsyncClient):

@@ -1,4 +1,3 @@
-import math
 from dataclasses import dataclass
 from uuid import UUID
 
@@ -122,35 +121,29 @@ async def retrieve(
             },
         )
 
-    chunks = await DocumentChunkRepository(session).list_active_chunks(
-        tenant_id,
-        document_types=routed_types,
-    )
     query_embedding = embedding_service.embed_text(safe_query)
     query_tokens = tokenize_for_retrieval(safe_query)
-    ranked = sorted(
-        (
-            (_cosine_similarity(query_embedding, chunk.embedding), chunk)
-            for chunk in chunks
-            if chunk.embedding is not None
-            and query_tokens.intersection(tokenize_for_retrieval(chunk.chunk_text))
-        ),
-        key=lambda item: item[0],
-        reverse=True,
+    candidate_limit = min(max(top_k * 5, 20), 100)
+    ranked = await DocumentChunkRepository(session).search_similar_chunks(
+        tenant_id,
+        query_embedding=query_embedding,
+        top_k=candidate_limit,
+        document_types=routed_types,
     )
     sources = [
         RagSource(
-            document_id=chunk.document_id,
-            document_title=chunk.document_title,
-            document_type=chunk.document_type.value,
-            content=chunk.parent_text,
-            score=round(score, 6),
-            chunk_index=chunk.chunk_index,
-            metadata=chunk.chunk_metadata,
+            document_id=scored.chunk.document_id,
+            document_title=scored.chunk.document_title,
+            document_type=scored.chunk.document_type.value,
+            content=scored.chunk.parent_text,
+            score=round(scored.score, 6),
+            chunk_index=scored.chunk.chunk_index,
+            metadata=scored.chunk.chunk_metadata,
         )
-        for score, chunk in ranked[:top_k]
-        if score >= MIN_RELEVANCE_SCORE
-    ]
+        for scored in ranked
+        if scored.score >= MIN_RELEVANCE_SCORE
+        and query_tokens.intersection(tokenize_for_retrieval(scored.chunk.chunk_text))
+    ][:top_k]
 
     if not sources:
         if audit:
@@ -235,14 +228,3 @@ def _rag_source_from_dict(source: dict[str, object]) -> RagSource:
         chunk_index=int(source["chunk_index"]),
         metadata=dict(source.get("metadata") or {}),
     )
-
-
-def _cosine_similarity(left: list[float], right: list[float]) -> float:
-    if not left or not right:
-        return 0.0
-    dot = sum(a * b for a, b in zip(left, right, strict=False))
-    left_norm = math.sqrt(sum(a * a for a in left))
-    right_norm = math.sqrt(sum(b * b for b in right))
-    if left_norm == 0 or right_norm == 0:
-        return 0.0
-    return dot / (left_norm * right_norm)
