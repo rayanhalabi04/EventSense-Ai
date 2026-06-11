@@ -1,9 +1,9 @@
 from uuid import UUID, uuid4
 
-from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.document import Document, DocumentChunk, DocumentStatus
+from app.repositories.document_chunk_repository import DocumentChunkRepository
 from app.services.audit_log_service import (
     AUDIT_EVENT_DOCUMENT_CHUNKED_INDEXED,
     AuditLogService,
@@ -43,16 +43,12 @@ async def rebuild_document_chunks(
     *,
     actor_user_id: UUID | None = None,
 ) -> int:
-    await session.execute(
-        delete(DocumentChunk).where(
-            DocumentChunk.tenant_id == document.tenant_id,
-            DocumentChunk.document_id == document.id,
-        )
-    )
+    chunks = DocumentChunkRepository(session)
+    await chunks.delete_for_document(document.tenant_id, document.id)
     if document.status == DocumentStatus.archived:
         chunk_count = 0
     else:
-        chunk_count = _add_chunks(session, document)
+        chunk_count = _add_chunks(chunks, document)
 
     AuditLogService.record(
         session,
@@ -71,7 +67,7 @@ async def rebuild_document_chunks(
     return chunk_count
 
 
-def _add_chunks(session: AsyncSession, document: Document) -> int:
+def _add_chunks(repository: DocumentChunkRepository, document: Document) -> int:
     rows: list[DocumentChunk] = []
     global_child_index = 0
     for parent_index, parent_text in enumerate(
@@ -101,5 +97,5 @@ def _add_chunks(session: AsyncSession, document: Document) -> int:
                 )
             )
             global_child_index += 1
-    session.add_all(rows)
+    repository.add_all(rows)
     return len(rows)

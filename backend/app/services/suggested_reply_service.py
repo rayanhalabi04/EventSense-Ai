@@ -15,15 +15,21 @@ import re
 from dataclasses import dataclass
 from uuid import UUID
 
+from fastapi import HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.models.conversation import Conversation
 from app.models.message import Message
 from app.models.suggested_reply import SuggestedReply, SuggestedReplyStatus
-from app.models.tenant import Tenant
+from app.core.tenant_context import TenantContext
+from app.repositories.suggested_reply_repository import SuggestedReplyRepository
+from app.repositories.tenant_repository import TenantRepository
 from app.services.audit_log_service import (
+    AUDIT_EVENT_SUGGESTED_REPLY_APPROVED,
+    AUDIT_EVENT_SUGGESTED_REPLY_EDITED,
     AUDIT_EVENT_SUGGESTED_REPLY_GENERATED,
+    AUDIT_EVENT_SUGGESTED_REPLY_REJECTED,
     AUDIT_EVENT_SUGGESTED_REPLY_REFUSED_NO_SOURCE,
     AuditLogService,
 )
@@ -34,6 +40,7 @@ from app.services.guardrail_service import (
     audit_guardrail_event,
     check_input_guardrails,
 )
+from app.schemas.suggested_reply import SuggestedReplyUpdate
 from app.services.rag_service import RagResult, retrieve
 
 
@@ -75,6 +82,93 @@ class GeneratedReply:
     source_document_ids: list[str]
     rag_sources: list[dict[str, object]]
     generation_method: str
+
+
+class SuggestedReplyService:
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+        self.replies = SuggestedReplyRepository(session)
+
+    async def get_tenant_suggested_reply_or_403(
+        self,
+        reply_id: UUID,
+        ctx: TenantContext,
+    ) -> SuggestedReply:
+        reply = await self.replies.get(reply_id)
+        if reply is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="suggested reply not found")
+        if reply.tenant_id != ctx.tenant_id:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="forbidden")
+        return reply
+
+    async def update_suggested_reply(
+        self,
+        reply_id: UUID,
+        payload: SuggestedReplyUpdate,
+        ctx: TenantContext,
+    ) -> SuggestedReply:
+        reply = await self.get_tenant_suggested_reply_or_403(reply_id, ctx)
+        update_fields = payload.model_fields_set
+
+        text_edited = "suggested_text" in update_fields and payload.suggested_text != reply.suggested_text
+        if "suggested_text" in update_fields:
+            reply.suggested_text = payload.suggested_text
+
+        # A bare text change with no explicit status means the staff member edited it.
+        new_status = payload.status if "status" in update_fields else None
+        if new_status is None and text_edited:
+            new_status = SuggestedReplyStatus.edited
+
+        if new_status is not None:
+            reply.status = new_status
+            if new_status == SuggestedReplyStatus.approved:
+                reply.approved_by_user_id = ctx.user_id
+
+        await self.session.flush()
+
+        base_details: dict[str, object] = {
+            "suggested_reply_id": reply.id,
+            "conversation_id": reply.conversation_id,
+            "message_id": reply.message_id,
+            "answer_supported": reply.answer_supported,
+            "source_document_ids": reply.source_document_ids,
+            "user_id": ctx.user_id,
+        }
+
+        if new_status == SuggestedReplyStatus.approved:
+            AuditLogService.record(
+                self.session,
+                tenant_id=ctx.tenant_id,
+                actor_user_id=ctx.user_id,
+                event_type=AUDIT_EVENT_SUGGESTED_REPLY_APPROVED,
+                resource_type="suggested_reply",
+                resource_id=reply.id,
+                details=base_details,
+            )
+        elif new_status == SuggestedReplyStatus.rejected:
+            AuditLogService.record(
+                self.session,
+                tenant_id=ctx.tenant_id,
+                actor_user_id=ctx.user_id,
+                event_type=AUDIT_EVENT_SUGGESTED_REPLY_REJECTED,
+                resource_type="suggested_reply",
+                resource_id=reply.id,
+                details=base_details,
+            )
+        elif new_status == SuggestedReplyStatus.edited or text_edited:
+            AuditLogService.record(
+                self.session,
+                tenant_id=ctx.tenant_id,
+                actor_user_id=ctx.user_id,
+                event_type=AUDIT_EVENT_SUGGESTED_REPLY_EDITED,
+                resource_type="suggested_reply",
+                resource_id=reply.id,
+                details=base_details,
+            )
+
+        await self.session.commit()
+        await self.session.refresh(reply)
+        return reply
 
 
 def _resolve_generation_method() -> str:
@@ -243,8 +337,7 @@ async def generate_suggested_reply(
     and ``message``. RAG retrieval is always scoped to ``tenant_id`` so a reply
     can only ever cite the current tenant's documents.
     """
-    tenant = await session.get(Tenant, tenant_id)
-    tenant_slug = tenant.slug if tenant is not None else None
+    tenant_slug = await TenantRepository(session).get_slug(tenant_id)
     guardrail_events: list[tuple[str, GuardrailResult]] = []
 
     input_result = check_input_guardrails(message.body, tenant_slug)
@@ -315,8 +408,7 @@ async def generate_suggested_reply(
         generation_method=generated.generation_method,
         created_by_user_id=user_id,
     )
-    session.add(reply)
-    await session.flush()
+    await SuggestedReplyRepository(session).add(reply)
 
     for rail_type, event in guardrail_events:
         audit_guardrail_event(

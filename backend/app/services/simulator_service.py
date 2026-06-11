@@ -5,12 +5,14 @@ from typing import Any
 from uuid import UUID
 
 from fastapi import HTTPException, status
-from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import ForbiddenError
 from app.models.conversation import Conversation, ConversationStatus
 from app.models.message import Message, MessageDirection, MessageStatus
+from app.repositories.conversation_repository import ConversationRepository
+from app.repositories.message_repository import MessageRepository
+from app.repositories.tenant_repository import TenantRepository
 from app.services.audit_log_service import (
     AUDIT_EVENT_MESSAGE_INTENT_CLASSIFIED,
     AUDIT_EVENT_MESSAGE_RISK_DETECTED,
@@ -19,6 +21,7 @@ from app.services.audit_log_service import (
     AuditLogService,
 )
 from app.services.intent_classifier_service import IntentClassifierService
+from app.services.guardrail_service import audit_guardrail_event, check_input_guardrails
 from app.services.risk_detection_service import detect_message_risk
 
 
@@ -78,8 +81,9 @@ class SimulatorService:
         client_contact: str | None,
         conversation_id: UUID | None,
     ) -> tuple[Conversation, bool, bool]:
+        conversations = ConversationRepository(session)
         if conversation_id is not None:
-            conversation = await session.get(Conversation, conversation_id)
+            conversation = await conversations.get(conversation_id)
             if conversation is None:
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
@@ -109,22 +113,11 @@ class SimulatorService:
             )
 
         normalized_name = client_name.strip()
-        query = (
-            select(Conversation)
-            .where(
-                Conversation.tenant_id == tenant_id,
-                func.lower(Conversation.client_name) == normalized_name.lower(),
-            )
-            .order_by(Conversation.created_at.desc())
-            .limit(1)
+        conversation = await conversations.find_latest_by_client(
+            tenant_id,
+            client_name=normalized_name,
+            client_contact=client_contact,
         )
-        if client_contact is None:
-            query = query.where(Conversation.client_contact.is_(None))
-        else:
-            query = query.where(Conversation.client_contact == client_contact)
-
-        result = await session.execute(query)
-        conversation = result.scalar_one_or_none()
         if conversation is not None:
             was_closed = conversation.status == ConversationStatus.closed
             if was_closed:
@@ -136,8 +129,7 @@ class SimulatorService:
             client_name=normalized_name,
             client_contact=client_contact,
         )
-        session.add(conversation)
-        await session.flush()
+        await conversations.add(conversation)
         return conversation, True, False
 
     @staticmethod
@@ -149,6 +141,8 @@ class SimulatorService:
         body: str,
     ) -> Message:
         now = datetime.now(timezone.utc)
+        tenant_slug = await TenantRepository(session).get_slug(tenant_id)
+        guardrail_result = check_input_guardrails(body, tenant_slug)
         conversation.updated_at = now
         message = Message(
             tenant_id=tenant_id,
@@ -160,8 +154,20 @@ class SimulatorService:
             sender_user_id=None,
             sent_at=now,
         )
-        session.add(message)
-        await session.flush()
+        await MessageRepository(session).add(message)
+        if guardrail_result.flags:
+            audit_guardrail_event(
+                session,
+                tenant_id=tenant_id,
+                actor_user_id=actor_user_id,
+                rail_type="input",
+                result=guardrail_result,
+                resource_type="message",
+                resource_id=message.id,
+                conversation_id=conversation.id,
+                message_id=message.id,
+                original_text=body,
+            )
         classification = IntentClassifierService.classify(body)
         message.intent_label = classification.label
         message.intent_confidence = classification.confidence
@@ -209,33 +215,15 @@ class SimulatorService:
         session: AsyncSession,
         tenant_id: UUID,
     ) -> list[ConversationSummary]:
-        message_counts = (
-            select(Message.conversation_id, func.count(Message.id).label("message_count"))
-            .where(Message.tenant_id == tenant_id)
-            .group_by(Message.conversation_id)
-            .subquery()
-        )
-        result = await session.execute(
-            select(
-                Conversation.id,
-                Conversation.client_name,
-                Conversation.client_contact,
-                Conversation.status,
-                func.coalesce(message_counts.c.message_count, 0),
-                Conversation.updated_at,
-            )
-            .outerjoin(message_counts, message_counts.c.conversation_id == Conversation.id)
-            .where(Conversation.tenant_id == tenant_id)
-            .order_by(Conversation.updated_at.desc())
-        )
+        rows = await ConversationRepository(session).list_with_message_counts(tenant_id)
         return [
             ConversationSummary(
-                id=row[0],
-                client_name=row[1],
-                client_contact=row[2],
-                status=row[3],
-                message_count=row[4],
-                updated_at=row[5],
+                id=conversation.id,
+                client_name=conversation.client_name,
+                client_contact=conversation.client_contact,
+                status=conversation.status,
+                message_count=message_count,
+                updated_at=conversation.updated_at,
             )
-            for row in result.all()
+            for conversation, message_count in rows
         ]
