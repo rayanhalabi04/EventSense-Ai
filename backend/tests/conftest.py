@@ -1,4 +1,8 @@
+import os
 from collections.abc import AsyncGenerator
+
+os.environ["LLM_ENABLED"] = "false"
+os.environ["MEMORY_ENABLED"] = "false"
 
 import pytest
 import pytest_asyncio
