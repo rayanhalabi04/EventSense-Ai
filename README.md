@@ -93,6 +93,23 @@ The feature exposes:
 - `GET /api/v1/conversations/{conversation_id}/detail`, which includes the
   latest `suggested_reply` when one exists
 
+LLM drafting is optional. By default `LLM_ENABLED=false`, so suggested replies
+use the deterministic `template_v1` fallback and require no provider key. To try
+Gemini locally, set:
+
+```env
+LLM_ENABLED=true
+LLM_PROVIDER=gemini
+GEMINI_API_KEY=your_gemini_key
+GEMINI_MODEL=gemini-2.5-flash
+```
+
+`LLM_PROVIDER` also accepts `groq` and `openai` when their matching API key and
+model env vars are configured. If the provider is unknown, missing config, times
+out, errors, returns an empty response, or produces unsafe output, EventSense AI
+keeps the existing template fallback and records `llm_fallback_reason` in the
+generated suggested-reply audit details.
+
 Manual demo flow:
 
 ```bash

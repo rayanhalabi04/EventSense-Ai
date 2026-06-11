@@ -23,9 +23,16 @@ class Settings(BaseSettings):
     app_env: str = "development"
     api_host: str = "0.0.0.0"
     api_port: int = 8000
+    llm_enabled: bool = False
+    llm_provider: str = "gemini"
+    llm_timeout_seconds: float = 10.0
+    gemini_api_key: str = ""
+    gemini_model: str = "gemini-2.5-flash"
+    groq_api_key: str = ""
+    groq_model: str = "llama-3.1-8b-instant"
     openai_api_key: str = ""
+    openai_model: str = "gpt-4o-mini"
     embedding_model: str = ""
-    llm_model: str = ""
     intent_classifier_artifact_path: str = (
         "app/ml/intent_classifier/artifacts/eventsense_tfidf_logreg_baseline.joblib"
     )

@@ -2,17 +2,18 @@
 #
 # Seed the demo RAG document packs into a running EventSense AI API.
 #
-# Logs in as each demo tenant manager and uploads that tenant's markdown
-# documents through POST /api/v1/documents. The documents live under
-# demo_data/rag_documents/<tenant>/ and are intentionally different between
-# tenants so tenant-scoped RAG isolation can be demonstrated.
+# Logs in as each demo tenant manager and uploads that tenant's .txt documents
+# through POST /api/v1/documents/upload. The documents live under
+# demo-documents/<tenant>/ and are intentionally different between tenants so
+# tenant-scoped RAG isolation can be demonstrated.
 #
 # Usage:
 #   scripts/seed_rag_documents.sh
 #   API_BASE_URL=http://localhost:8000 scripts/seed_rag_documents.sh
 #
 # Environment:
-#   API_BASE_URL   Base URL of the running API (default: http://localhost:8088)
+#   API_BASE_URL   Base URL of the running API. Defaults to .env API_BASE_URL,
+#                  then .env API_HOST_PORT, then http://localhost:8000.
 #
 # Duplicate handling:
 #   Before uploading, the script lists existing documents and skips any whose
@@ -22,16 +23,13 @@
 #
 # Notes / assumptions:
 #   - Login endpoint is POST /auth/token with {email, password, tenant_slug}.
-#   - "pricing_packages.md" is uploaded with document_type "package" because the
-#     backend DocumentType enum has no "pricing_package" value (it exposes
-#     "pricing" and "package"). "package" is the closest valid value.
+#   - Documents are uploaded through the real multipart .txt upload endpoint.
 #   - Requires python3 (used only to build/parse JSON safely; no jq dependency).
 #
 set -u
 
-API_BASE_URL="${API_BASE_URL:-http://localhost:8088}"
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-DOCS_ROOT="${REPO_ROOT}/demo_data/rag_documents"
+DOCS_ROOT="${REPO_ROOT}/demo-documents"
 
 if ! command -v python3 >/dev/null 2>&1; then
   echo "ERROR: python3 is required but was not found on PATH." >&2
@@ -39,6 +37,35 @@ if ! command -v python3 >/dev/null 2>&1; then
 fi
 
 # --- small helpers -----------------------------------------------------------
+
+env_value() { # key
+  if [ -f "${REPO_ROOT}/.env" ]; then
+    python3 - "$1" "${REPO_ROOT}/.env" <<'PY'
+import sys
+
+key, path = sys.argv[1], sys.argv[2]
+with open(path, encoding="utf-8") as fh:
+    for raw in fh:
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        name, value = line.split("=", 1)
+        if name.strip() == key:
+            print(value.strip().strip('"').strip("'"))
+            break
+PY
+  fi
+}
+
+if [ -z "${API_BASE_URL:-}" ]; then
+  API_HOST_PORT_FROM_ENV="$(env_value API_HOST_PORT)"
+  API_BASE_URL_FROM_ENV="$(env_value API_BASE_URL)"
+  if [ -n "${API_BASE_URL_FROM_ENV}" ]; then
+    API_BASE_URL="${API_BASE_URL_FROM_ENV}"
+  else
+    API_BASE_URL="http://localhost:${API_HOST_PORT_FROM_ENV:-8000}"
+  fi
+fi
 
 # Read a top-level string field from a JSON blob.
 json_get() { # json key
@@ -58,20 +85,6 @@ try:
     print('yes' if any(d.get('title')==want for d in arr) else 'no')
 except Exception:
     print('no')" <<<"$1"
-}
-
-# Build a DocumentCreate JSON body from a file's contents (handles escaping).
-build_doc_payload() { # title document_type original_filename file_path
-  TITLE="$1" DTYPE="$2" FNAME="$3" FPATH="$4" python3 -c "import json,os
-with open(os.environ['FPATH'], 'r', encoding='utf-8') as fh:
-    content = fh.read()
-print(json.dumps({
-    'title': os.environ['TITLE'],
-    'document_type': os.environ['DTYPE'],
-    'original_filename': os.environ['FNAME'],
-    'content_text': content,
-    'status': 'active',
-}))"
 }
 
 TOKEN=""
@@ -114,8 +127,6 @@ load_existing_docs() {
 
 upload_doc() { # title document_type file_path
   local title="$1" dtype="$2" fpath="$3"
-  local fname
-  fname="$(basename "$fpath")"
 
   if [ ! -f "$fpath" ]; then
     echo "  [FAIL] missing file: ${fpath}" >&2
@@ -127,13 +138,13 @@ upload_doc() { # title document_type file_path
     return 0
   fi
 
-  local payload code body
-  payload="$(build_doc_payload "${title}" "${dtype}" "${fname}" "${fpath}")"
+  local code body
   body="$(curl -s -o /tmp/seed_rag_doc.$$ -w '%{http_code}' \
-    -X POST "${API_BASE_URL}/api/v1/documents" \
-    -H 'Content-Type: application/json' \
     -H "Authorization: Bearer ${TOKEN}" \
-    -d "${payload}" 2>/dev/null || echo 000)"
+    -F "title=${title}" \
+    -F "document_type=${dtype}" \
+    -F "file=@${fpath};type=text/plain" \
+    "${API_BASE_URL}/api/v1/documents/upload" 2>/dev/null || echo 000)"
   code="${body}"
   body="$(cat /tmp/seed_rag_doc.$$ 2>/dev/null || true)"
   rm -f /tmp/seed_rag_doc.$$
@@ -152,12 +163,9 @@ upload_doc() { # title document_type file_path
 
 # filename -> "title|document_type". Order controls upload order.
 DOC_TITLES=(
-  "pricing_packages.md|%TENANT% Pricing & Packages|package"
-  "deposit_policy.md|%TENANT% Deposit Policy|deposit_policy"
-  "cancellation_policy.md|%TENANT% Cancellation Policy|cancellation_policy"
-  "guest_count_policy.md|%TENANT% Guest Count Policy|service_description"
-  "services_faq.md|%TENANT% FAQ|faq"
-  "contract_terms.md|%TENANT% Contract Terms|contract_terms"
+  "pricing-packages.txt|%TENANT% Pricing & Packages|package"
+  "cancellation-policy.txt|%TENANT% Cancellation Policy|cancellation_policy"
+  "faq.txt|%TENANT% FAQ|faq"
 )
 
 seed_tenant() { # tenant_dir title_prefix
@@ -184,13 +192,13 @@ echo "Documents source: ${DOCS_ROOT}"
 OVERALL_FAIL=0
 
 if login "elegant-weddings" "admin@elegant-weddings.demo" "demo-password-1" "Elegant Weddings"; then
-  seed_tenant "elegant_weddings" "Elegant Weddings" || OVERALL_FAIL=1
+  seed_tenant "elegant-weddings" "Elegant Weddings" || OVERALL_FAIL=1
 else
   OVERALL_FAIL=1
 fi
 
 if login "royal-events-agency" "admin@royal-events.demo" "demo-password-2" "Royal Events Agency"; then
-  seed_tenant "royal_events" "Royal Events" || OVERALL_FAIL=1
+  seed_tenant "royal-events" "Royal Events" || OVERALL_FAIL=1
 else
   OVERALL_FAIL=1
 fi

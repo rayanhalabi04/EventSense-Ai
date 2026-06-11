@@ -8,17 +8,16 @@ that recommends staff/manager review instead of inventing policy.
 The default generator is a deterministic, template-based builder
 (``template_v1``) so the feature works without any paid LLM API and so tests are
 fully reproducible. A hosted-LLM generator can be added later behind
-``settings.llm_model`` without changing the public surface of this module — see
-``_resolve_generation_method``.
+``settings.llm_enabled`` without changing the public API contract.
 """
 import re
 from dataclasses import dataclass
+from typing import Callable
 from uuid import UUID
 
 from fastapi import HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import settings
 from app.models.conversation import Conversation
 from app.models.message import Message
 from app.models.suggested_reply import SuggestedReply, SuggestedReplyStatus
@@ -39,12 +38,15 @@ from app.services.guardrail_service import (
     apply_guardrails_to_suggested_reply,
     audit_guardrail_event,
     check_input_guardrails,
+    check_output_guardrails,
 )
+from app.services.llm_service import LLMClient, LLMReplyRequest, get_llm_client
 from app.schemas.suggested_reply import SuggestedReplyUpdate
 from app.services.rag_service import RagResult, retrieve
 
 
 GENERATION_METHOD_TEMPLATE = "template_v1"
+GENERATION_METHOD_LLM = "llm_v1"
 
 REFUSAL_TEXT = (
     "Hi, thank you for your message. I could not find enough information in our "
@@ -82,6 +84,7 @@ class GeneratedReply:
     source_document_ids: list[str]
     rag_sources: list[dict[str, object]]
     generation_method: str
+    fallback_reason: str | None = None
 
 
 class SuggestedReplyService:
@@ -169,17 +172,6 @@ class SuggestedReplyService:
         await self.session.commit()
         await self.session.refresh(reply)
         return reply
-
-
-def _resolve_generation_method() -> str:
-    """Return the active generation method.
-
-    Today this is always the deterministic template generator. When a hosted
-    LLM is configured (``settings.llm_model``) a future ``llm_v1`` generator can
-    be selected here; the template generator remains the safe fallback so tests
-    never depend on an external API.
-    """
-    return GENERATION_METHOD_TEMPLATE
 
 
 def _first_sentence_containing(text: str, keywords: tuple[str, ...]) -> str | None:
@@ -290,7 +282,6 @@ def generate_reply_text(
     risk_level: str | None,
 ) -> GeneratedReply:
     """Pure, deterministic generation step (no DB, no auth) for easy testing."""
-    method = _resolve_generation_method()
     if not rag_result.answer_supported or not rag_result.sources:
         return GeneratedReply(
             suggested_text=REFUSAL_TEXT,
@@ -298,7 +289,7 @@ def generate_reply_text(
             refusal_reason=rag_result.refusal_reason or REFUSAL_REASON,
             source_document_ids=[],
             rag_sources=[],
-            generation_method=method,
+            generation_method=GENERATION_METHOD_TEMPLATE,
         )
 
     compact = _compact_sources(rag_result)
@@ -319,7 +310,73 @@ def generate_reply_text(
         refusal_reason=None,
         source_document_ids=source_document_ids,
         rag_sources=compact,
-        generation_method=method,
+        generation_method=GENERATION_METHOD_TEMPLATE,
+    )
+
+
+async def generate_reply_text_with_optional_llm(
+    *,
+    rag_result: RagResult,
+    message_body: str,
+    intent_label: str | None,
+    risk_level: str | None,
+    risk_reason: str | None,
+    tenant_slug: str | None,
+    llm_client_factory: Callable[[], LLMClient | None] | None = None,
+) -> GeneratedReply:
+    template_reply = generate_reply_text(
+        rag_result=rag_result,
+        message_body=message_body,
+        risk_level=risk_level,
+    )
+    if not template_reply.answer_supported or not template_reply.rag_sources:
+        return template_reply
+
+    llm_client = (llm_client_factory or get_llm_client)()
+    if llm_client is None:
+        return _with_fallback_reason(template_reply, "llm_disabled_or_not_configured")
+
+    try:
+        response = await llm_client.generate_suggested_reply(
+            LLMReplyRequest(
+                client_message=message_body,
+                intent_label=intent_label,
+                risk_level=risk_level,
+                risk_reason=risk_reason,
+                rag_sources=template_reply.rag_sources,
+            )
+        )
+        llm_text = response.text.strip()
+        if not llm_text:
+            raise ValueError("llm_empty_response")
+        output_result = check_output_guardrails(
+            llm_text,
+            template_reply.rag_sources,
+            tenant_slug,
+        )
+        if not output_result.allowed:
+            return _with_fallback_reason(template_reply, "llm_output_rejected_by_guardrails")
+        return GeneratedReply(
+            suggested_text=output_result.sanitized_text or llm_text,
+            answer_supported=True,
+            refusal_reason=None,
+            source_document_ids=template_reply.source_document_ids,
+            rag_sources=template_reply.rag_sources,
+            generation_method=GENERATION_METHOD_LLM,
+        )
+    except Exception as exc:
+        return _with_fallback_reason(template_reply, f"llm_error:{exc.__class__.__name__}")
+
+
+def _with_fallback_reason(reply: GeneratedReply, reason: str) -> GeneratedReply:
+    return GeneratedReply(
+        suggested_text=reply.suggested_text,
+        answer_supported=reply.answer_supported,
+        refusal_reason=reply.refusal_reason,
+        source_document_ids=reply.source_document_ids,
+        rag_sources=reply.rag_sources,
+        generation_method=reply.generation_method,
+        fallback_reason=reason,
     )
 
 
@@ -330,6 +387,7 @@ async def generate_suggested_reply(
     user_id: UUID,
     conversation: Conversation,
     message: Message,
+    llm_client_factory: Callable[[], LLMClient | None] | None = None,
 ) -> SuggestedReply:
     """Generate, persist, and audit a suggested reply for ``message``.
 
@@ -351,7 +409,7 @@ async def generate_suggested_reply(
             refusal_reason=input_result.reason or SAFE_REFUSAL,
             source_document_ids=[],
             rag_sources=[],
-            generation_method=_resolve_generation_method(),
+            generation_method=GENERATION_METHOD_TEMPLATE,
         )
     else:
         rag_result = await retrieve(
@@ -363,10 +421,14 @@ async def generate_suggested_reply(
             audit=False,
             enforce_guardrails=False,
         )
-        generated = generate_reply_text(
+        generated = await generate_reply_text_with_optional_llm(
             rag_result=rag_result,
             message_body=input_result.sanitized_text or message.body,
+            intent_label=message.intent_label,
             risk_level=message.risk_level,
+            risk_reason=message.risk_reason,
+            tenant_slug=tenant_slug,
+            llm_client_factory=llm_client_factory,
         )
         (
             suggested_text,
@@ -393,6 +455,7 @@ async def generate_suggested_reply(
             ],
             rag_sources=rag_sources,
             generation_method=generated.generation_method,
+            fallback_reason=generated.fallback_reason,
         )
 
     reply = SuggestedReply(
@@ -432,6 +495,7 @@ async def generate_suggested_reply(
         "message_id": message.id,
         "answer_supported": generated.answer_supported,
         "generation_method": generated.generation_method,
+        "llm_fallback_reason": generated.fallback_reason,
         "source_document_ids": generated.source_document_ids,
         "source_document_titles": source_titles,
         "user_id": user_id,

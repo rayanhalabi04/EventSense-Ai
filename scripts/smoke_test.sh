@@ -11,14 +11,42 @@
 #
 set -u
 
-API_BASE_URL="${API_BASE_URL:-http://localhost:8000}"
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+
+env_value() { # key
+  if [ -f "${REPO_ROOT}/.env" ]; then
+    python3 - "$1" "${REPO_ROOT}/.env" <<'PY'
+import sys
+
+key, path = sys.argv[1], sys.argv[2]
+with open(path, encoding="utf-8") as fh:
+    for raw in fh:
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        name, value = line.split("=", 1)
+        if name.strip() == key:
+            print(value.strip().strip('"').strip("'"))
+            break
+PY
+  fi
+}
+
+if [ -z "${API_BASE_URL:-}" ]; then
+  API_HOST_PORT_FROM_ENV="$(env_value API_HOST_PORT)"
+  API_BASE_URL_FROM_ENV="$(env_value API_BASE_URL)"
+  if [ -n "${API_BASE_URL_FROM_ENV}" ]; then
+    API_BASE_URL="${API_BASE_URL_FROM_ENV}"
+  else
+    API_BASE_URL="http://localhost:${API_HOST_PORT_FROM_ENV:-8000}"
+  fi
+fi
 SMOKE_USER_EMAIL="${SMOKE_USER_EMAIL:-admin@elegant-weddings.demo}"
 SMOKE_USER_PASSWORD="${SMOKE_USER_PASSWORD:-demo-password-1}"
 SMOKE_TENANT_SLUG="${SMOKE_TENANT_SLUG:-elegant-weddings}"
 HEALTH_RETRIES="${HEALTH_RETRIES:-30}"
 HEALTH_INTERVAL="${HEALTH_INTERVAL:-2}"
 
-REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 ARTIFACT_DIR="${REPO_ROOT}/eval-artifacts"
 ARTIFACT="${ARTIFACT_DIR}/docker_smoke.json"
 mkdir -p "${ARTIFACT_DIR}"
