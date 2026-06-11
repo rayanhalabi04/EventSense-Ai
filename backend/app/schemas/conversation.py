@@ -6,6 +6,7 @@ from pydantic import BaseModel, ConfigDict
 from app.models.conversation import ConversationStatus
 from app.models.message import MessageDirection, MessageStatus
 from app.schemas.escalation import EscalationRead
+from app.schemas.suggested_reply import SuggestedReplyRead
 from app.schemas.task import TaskRead
 
 
@@ -78,7 +79,7 @@ class ConversationDetailResponse(BaseModel):
     latest_risk_reason: str | None = None
     latest_risk_detected_at: datetime | None = None
     audit_timeline: list[ConversationDetailAuditEvent]
-    suggested_reply: None = None
+    suggested_reply: SuggestedReplyRead | None = None
     rag_sources: list[dict[str, object]]
     tasks: list[TaskRead]
     escalations: list[EscalationRead]

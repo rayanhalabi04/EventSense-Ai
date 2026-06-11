@@ -1,0 +1,107 @@
+@import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap");
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/**
+ * EventSense AI semantic theme.
+ *
+ * Brand palette → HSL:
+ *   charcoal #172121 = 180 18% 11%
+ *   slate    #444554 = 232 11% 30%
+ *   mauve    #7F7B82 = 274  3% 50%
+ *   rose     #BFACB5 = 327 13% 71%
+ *   blush    #E5D0CC = 11  35% 85%
+ *
+ * Light, warm, professional surface with a deep charcoal sidebar.
+ */
+@layer base {
+  :root {
+    --background: 24 33% 98%;
+    --foreground: 180 18% 11%;
+
+    --card: 0 0% 100%;
+    --card-foreground: 180 18% 11%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 180 18% 11%;
+
+    /* Primary = charcoal (main actions, emphasis) */
+    --primary: 180 18% 11%;
+    --primary-foreground: 11 35% 96%;
+
+    /* Secondary = soft blush surface */
+    --secondary: 14 32% 93%;
+    --secondary-foreground: 180 18% 16%;
+
+    --muted: 20 16% 95%;
+    --muted-foreground: 274 4% 42%;
+
+    /* Accent = dusty rose */
+    --accent: 327 18% 84%;
+    --accent-foreground: 180 18% 14%;
+
+    --destructive: 4 68% 50%;
+    --destructive-foreground: 0 0% 100%;
+
+    --success: 152 42% 36%;
+    --success-foreground: 0 0% 100%;
+
+    --warning: 33 88% 48%;
+    --warning-foreground: 30 40% 12%;
+
+    --border: 20 14% 89%;
+    --input: 20 14% 88%;
+    --ring: 327 18% 60%;
+
+    --radius: 0.7rem;
+
+    /* Sidebar (deep charcoal) */
+    --sidebar: 180 18% 11%;
+    --sidebar-foreground: 14 30% 92%;
+    --sidebar-muted: 274 5% 62%;
+    --sidebar-accent: 327 22% 74%;
+    --sidebar-border: 180 12% 20%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    @apply bg-background text-foreground antialiased;
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  }
+
+  /* Accessible, on-brand focus ring across all interactive elements. */
+  :focus-visible {
+    @apply outline-none ring-2 ring-ring ring-offset-2 ring-offset-background;
+  }
+}
+
+@layer utilities {
+  .text-balance {
+    text-wrap: balance;
+  }
+
+  /* Subtle scrollbar that fits the warm theme. */
+  .scrollbar-thin {
+    scrollbar-width: thin;
+    scrollbar-color: hsl(var(--border)) transparent;
+  }
+  .scrollbar-thin::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  .scrollbar-thin::-webkit-scrollbar-thumb {
+    background-color: hsl(var(--border));
+    border-radius: 9999px;
+  }
+}

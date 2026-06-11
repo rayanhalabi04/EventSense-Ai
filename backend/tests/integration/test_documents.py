@@ -1,4 +1,4 @@
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from httpx import AsyncClient
@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import create_access_token, hash_password
 from app.models.audit_log import AuditLog
+from app.models.document import DocumentChunk
 from app.models.tenant import Tenant
 from app.models.user import User, UserRole
 from app.services.audit_log_service import (
@@ -14,6 +15,7 @@ from app.services.audit_log_service import (
     AUDIT_EVENT_DOCUMENT_CREATED,
     AUDIT_EVENT_DOCUMENT_UPDATED,
 )
+from app.services.document_service import MAX_UPLOAD_BYTES
 
 
 pytestmark = pytest.mark.asyncio
@@ -67,6 +69,38 @@ async def create_document(
     return response.json()
 
 
+async def upload_document(
+    client: AsyncClient,
+    token: str,
+    *,
+    filename: str = "uploaded-faq.txt",
+    content: bytes = b"Uploaded FAQ says indoor candles are allowed in glass holders.",
+    document_type: str = "faq",
+    title: str | None = "Uploaded FAQ",
+) -> dict:
+    data = {"document_type": document_type}
+    if title is not None:
+        data["title"] = title
+    response = await client.post(
+        "/api/v1/documents/upload",
+        headers=auth_headers(token),
+        data=data,
+        files={"file": (filename, content, "text/plain")},
+    )
+    assert response.status_code == 201
+    return response.json()
+
+
+async def query_rag(client: AsyncClient, token: str, query: str) -> dict[str, object]:
+    response = await client.post(
+        "/api/v1/rag/query",
+        headers=auth_headers(token),
+        json={"query": query},
+    )
+    assert response.status_code == 200
+    return response.json()
+
+
 async def test_manager_can_create_document_for_own_tenant(client: AsyncClient):
     token = await login(client)
 
@@ -76,6 +110,101 @@ async def test_manager_can_create_document_for_own_tenant(client: AsyncClient):
     assert document["document_type"] == "package"
     assert document["status"] == "active"
     assert document["uploaded_by_user_id"] is not None
+
+
+async def test_manager_can_upload_txt_document(
+    client: AsyncClient,
+    db_session: AsyncSession,
+):
+    token = await login(client)
+
+    document = await upload_document(
+        client,
+        token,
+        filename="candle-policy.txt",
+        title="Candle Policy",
+        document_type="faq",
+        content=b"Candles are allowed only inside glass holders.",
+    )
+
+    assert document["title"] == "Candle Policy"
+    assert document["document_type"] == "faq"
+    assert document["original_filename"] == "candle-policy.txt"
+    assert document["content_text"] == "Candles are allowed only inside glass holders."
+    chunks = (
+        await db_session.execute(
+            select(DocumentChunk).where(DocumentChunk.document_id == UUID(document["id"]))
+        )
+    ).scalars().all()
+    assert chunks
+    assert chunks[0].embedding
+
+
+async def test_upload_uses_filename_as_default_title(client: AsyncClient):
+    token = await login(client)
+
+    document = await upload_document(
+        client,
+        token,
+        filename="guest-count-policy.txt",
+        title=None,
+        document_type="service_description",
+        content=b"Final guest count is due fourteen days before the event.",
+    )
+
+    assert document["title"] == "Guest Count Policy"
+
+
+async def test_upload_rejects_wrong_file_type(client: AsyncClient):
+    token = await login(client)
+
+    response = await client.post(
+        "/api/v1/documents/upload",
+        headers=auth_headers(token),
+        data={"document_type": "faq", "title": "Bad Upload"},
+        files={"file": ("bad.pdf", b"not a txt file", "application/pdf")},
+    )
+
+    assert response.status_code == 400
+    assert "only .txt files" in response.json()["detail"]
+
+
+async def test_upload_rejects_empty_txt_file(client: AsyncClient):
+    token = await login(client)
+
+    response = await client.post(
+        "/api/v1/documents/upload",
+        headers=auth_headers(token),
+        data={"document_type": "faq", "title": "Empty Upload"},
+        files={"file": ("empty.txt", b"   \n", "text/plain")},
+    )
+
+    assert response.status_code == 400
+    assert "must not be empty" in response.json()["detail"]
+
+
+async def test_upload_rejects_oversized_txt_file(client: AsyncClient):
+    token = await login(client)
+
+    response = await client.post(
+        "/api/v1/documents/upload",
+        headers=auth_headers(token),
+        data={"document_type": "faq", "title": "Huge Upload"},
+        files={"file": ("huge.txt", b"x" * (MAX_UPLOAD_BYTES + 1), "text/plain")},
+    )
+
+    assert response.status_code == 413
+    assert "file too large" in response.json()["detail"]
+
+
+async def test_upload_requires_auth(client: AsyncClient):
+    response = await client.post(
+        "/api/v1/documents/upload",
+        data={"document_type": "faq", "title": "Unauthorized Upload"},
+        files={"file": ("faq.txt", b"Useful tenant FAQ.", "text/plain")},
+    )
+
+    assert response.status_code == 401
 
 
 async def test_staff_cannot_create_document(
@@ -96,6 +225,64 @@ async def test_staff_cannot_create_document(
     )
 
     assert response.status_code == 403
+
+
+async def test_staff_cannot_upload_document(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    demo_tenants: dict[str, Tenant],
+):
+    token = await create_staff_token(db_session, demo_tenants["elegant-weddings"])
+
+    response = await client.post(
+        "/api/v1/documents/upload",
+        headers=auth_headers(token),
+        data={"document_type": "faq", "title": "Staff Upload"},
+        files={"file": ("staff.txt", b"Staff upload should be forbidden.", "text/plain")},
+    )
+
+    assert response.status_code == 403
+
+
+async def test_uploaded_document_can_be_retrieved_by_rag(client: AsyncClient):
+    token = await login(client)
+    document = await upload_document(
+        client,
+        token,
+        filename="sparkler-policy.txt",
+        title="Sparkler Policy",
+        document_type="faq",
+        content=b"Sparkler exits are allowed only in the garden after the cake ceremony.",
+    )
+
+    result = await query_rag(client, token, "Are sparkler exits allowed in the garden?")
+
+    assert result["answer_supported"] is True
+    assert result["sources"][0]["document_id"] == document["id"]
+    assert "Sparkler exits" in result["sources"][0]["content"]
+
+
+async def test_uploaded_documents_remain_tenant_isolated(client: AsyncClient):
+    elegant_token = await login(client)
+    royal_token = await login(
+        client,
+        email="admin@royal-events.demo",
+        password="demo-password-2",
+        tenant_slug="royal-events-agency",
+    )
+    await upload_document(
+        client,
+        royal_token,
+        filename="orchid-dome-policy.txt",
+        title="Orchid Dome Policy",
+        document_type="faq",
+        content=b"The orchid dome package includes a mirrored aisle and ceiling florals.",
+    )
+
+    result = await query_rag(client, elegant_token, "What does the orchid dome package include?")
+
+    assert result["answer_supported"] is False
+    assert result["sources"] == []
 
 
 async def test_staff_can_list_and_read_documents(

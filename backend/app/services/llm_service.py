@@ -1,0 +1,199 @@
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Protocol
+
+import httpx
+
+from app.core.config import settings
+
+
+@dataclass(frozen=True)
+class LLMReplyRequest:
+    client_message: str
+    intent_label: str | None
+    risk_level: str | None
+    risk_reason: str | None
+    rag_sources: list[dict[str, object]]
+    conversation_memory: list[dict[str, str]] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class LLMReplyResponse:
+    text: str
+    model: str
+
+
+class LLMClient(Protocol):
+    async def generate_suggested_reply(self, request: LLMReplyRequest) -> LLMReplyResponse:
+        ...
+
+
+class OpenAIChatClient:
+    def __init__(
+        self,
+        *,
+        api_key: str,
+        model: str,
+        timeout_seconds: float,
+        base_url: str = "https://api.openai.com/v1",
+    ) -> None:
+        self.api_key = api_key
+        self.model = model
+        self.timeout_seconds = timeout_seconds
+        self.base_url = base_url.rstrip("/")
+
+    async def generate_suggested_reply(self, request: LLMReplyRequest) -> LLMReplyResponse:
+        payload = {
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": _system_prompt()},
+                {"role": "user", "content": _user_prompt(request)},
+            ],
+            "temperature": 0.2,
+            "max_tokens": 350,
+        }
+        async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
+            response = await client.post(
+                f"{self.base_url}/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {self.api_key}",
+                    "Content-Type": "application/json",
+                },
+                json=payload,
+            )
+            response.raise_for_status()
+        data = response.json()
+        text = data["choices"][0]["message"]["content"]
+        return LLMReplyResponse(text=str(text).strip(), model=self.model)
+
+
+class GeminiClient:
+    def __init__(
+        self,
+        *,
+        api_key: str,
+        model: str,
+        timeout_seconds: float,
+        base_url: str = "https://generativelanguage.googleapis.com/v1beta",
+    ) -> None:
+        self.api_key = api_key
+        self.model = model
+        self.timeout_seconds = timeout_seconds
+        self.base_url = base_url.rstrip("/")
+
+    async def generate_suggested_reply(self, request: LLMReplyRequest) -> LLMReplyResponse:
+        payload = {
+            "systemInstruction": {"parts": [{"text": _system_prompt()}]},
+            "contents": [
+                {
+                    "role": "user",
+                    "parts": [{"text": _user_prompt(request)}],
+                }
+            ],
+            "generationConfig": {
+                "temperature": 0.2,
+                "maxOutputTokens": 350,
+            },
+        }
+        async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
+            response = await client.post(
+                f"{self.base_url}/models/{self.model}:generateContent",
+                params={"key": self.api_key},
+                json=payload,
+            )
+            response.raise_for_status()
+        data = response.json()
+        parts = data["candidates"][0]["content"].get("parts", [])
+        text = "".join(str(part.get("text", "")) for part in parts).strip()
+        return LLMReplyResponse(text=text, model=self.model)
+
+
+class FakeLLMClient:
+    def __init__(self, text: str, *, model: str = "fake-llm") -> None:
+        self.text = text
+        self.model = model
+        self.requests: list[LLMReplyRequest] = []
+
+    async def generate_suggested_reply(self, request: LLMReplyRequest) -> LLMReplyResponse:
+        self.requests.append(request)
+        return LLMReplyResponse(text=self.text, model=self.model)
+
+
+def get_llm_client() -> LLMClient | None:
+    if not settings.llm_enabled:
+        return None
+    provider = settings.llm_provider.strip().lower()
+    if provider == "gemini":
+        if not settings.gemini_api_key.strip() or not settings.gemini_model.strip():
+            return None
+        return GeminiClient(
+            api_key=settings.gemini_api_key,
+            model=settings.gemini_model,
+            timeout_seconds=settings.llm_timeout_seconds,
+        )
+    if provider == "groq":
+        if not settings.groq_api_key.strip() or not settings.groq_model.strip():
+            return None
+        return OpenAIChatClient(
+            api_key=settings.groq_api_key,
+            model=settings.groq_model,
+            timeout_seconds=settings.llm_timeout_seconds,
+            base_url="https://api.groq.com/openai/v1",
+        )
+    if provider == "openai":
+        if not settings.openai_api_key.strip() or not settings.openai_model.strip():
+            return None
+        return OpenAIChatClient(
+            api_key=settings.openai_api_key,
+            model=settings.openai_model,
+            timeout_seconds=settings.llm_timeout_seconds,
+        )
+    return None
+
+
+def _system_prompt() -> str:
+    return (
+        "You draft suggested replies for EventSense AI staff review only. "
+        "Use only the provided tenant document sources. Do not invent policy details, prices, "
+        "dates, exceptions, availability, or commitments that are not supported by the sources. "
+        "If the sources do not support an answer, say staff should review the question instead. "
+        "Write a concise, friendly client-facing draft and make clear that staff must review it "
+        "before sending."
+    )
+
+
+def _user_prompt(request: LLMReplyRequest) -> str:
+    source_blocks = []
+    for index, source in enumerate(request.rag_sources, start=1):
+        source_blocks.append(
+            "\n".join(
+                [
+                    f"Source {index}: {source.get('document_title', 'Untitled')}",
+                    f"Type: {source.get('document_type', '')}",
+                    f"Content: {source.get('content', '')}",
+                ]
+            )
+        )
+    memory_blocks = []
+    for index, message in enumerate(request.conversation_memory, start=1):
+        memory_blocks.append(
+            "\n".join(
+                [
+                    f"Message {index} ({message.get('direction', 'unknown')}):",
+                    str(message.get("body", "")),
+                ]
+            )
+        )
+    return "\n\n".join(
+        [
+            f"Client message:\n{request.client_message}",
+            f"Detected intent: {request.intent_label or 'unknown'}",
+            f"Risk level: {request.risk_level or 'unknown'}",
+            f"Risk reason: {request.risk_reason or 'none'}",
+            "Recent conversation memory:\n"
+            + ("\n\n".join(memory_blocks) if memory_blocks else "No recent memory available."),
+            "Tenant document sources:\n" + "\n\n".join(source_blocks),
+            "Draft one suggested reply using only these sources. The reply is not sent automatically; staff must review it before sending.",
+        ]
+    )
