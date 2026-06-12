@@ -246,3 +246,27 @@ export interface SimulatorMessageResponse {
   risk_reason: string | null;
   risk_detected_at: ISODateTime | null;
 }
+
+/** Dry-run focused-agent recommendation. Read-only: creates nothing. */
+export interface AgentRecommendedTask {
+  should_create: boolean;
+  reason: string | null;
+}
+
+export interface AgentRecommendedEscalation {
+  should_escalate: boolean;
+  reason: string | null;
+}
+
+export interface AgentDecision {
+  ran: boolean;
+  skipped_reason: string | null;
+  trigger_intent: string | null;
+  risk_level: RiskLevel | null;
+  risk_reason: string | null;
+  recommended_task: AgentRecommendedTask;
+  recommended_escalation: AgentRecommendedEscalation;
+  human_review_required: boolean;
+  confidence: string;
+  audit_run_id: UUID;
+}

@@ -3,6 +3,7 @@ import { RiskBadge } from "@/components/badges/risk-badge";
 import { StatusBadge } from "@/components/badges/status-badge";
 import { ActionButton } from "@/components/common/action-button";
 import { ErrorState, LoadingState } from "@/components/common/states";
+import { AgentAnalysisCard } from "@/components/domain/agent-analysis-card";
 import { AIReplyCard } from "@/components/domain/ai-reply-card";
 import { AuditTimeline } from "@/components/domain/audit-timeline";
 import { MessageCard } from "@/components/domain/message-card";
@@ -29,6 +30,7 @@ import {
   useCreateEscalation,
   useCreateTask,
   useGenerateReply,
+  useRunAgentAnalysis,
   useUpdateConversation,
   useUpdateReply,
 } from "@/hooks/queries";
@@ -51,6 +53,7 @@ export function MessageDetailPage() {
   const generate = useGenerateReply(conversationId);
   const updateReply = useUpdateReply(conversationId);
   const updateConversation = useUpdateConversation(conversationId);
+  const agent = useRunAgentAnalysis(conversationId);
 
   const [taskOpen, setTaskOpen] = useState(false);
   const [escalateOpen, setEscalateOpen] = useState(false);
@@ -221,6 +224,19 @@ export function MessageDetailPage() {
             onApprove={onApprove}
             onSaveEdit={onSaveEdit}
             onReject={onReject}
+          />
+
+          <AgentAnalysisCard
+            decision={agent.data}
+            running={agent.isPending}
+            disabled={!latestMessageId}
+            onRun={() => {
+              if (!latestMessageId) return;
+              agent.mutate(latestMessageId, {
+                onError: (e) =>
+                  toast.error(e instanceof Error ? e.message : "Could not run agent analysis"),
+              });
+            }}
           />
         </div>
 

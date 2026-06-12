@@ -1,5 +1,6 @@
 import { api } from "@/lib/api";
 import type {
+  AgentDecision,
   AuditLog,
   ConversationDetail,
   ConversationItem,
@@ -134,6 +135,21 @@ export function useGenerateReply(conversationId: string) {
         messageId ? { message_id: messageId } : undefined,
       ),
     onSuccess: invalidate,
+  });
+}
+
+/**
+ * Run the dry-run focused agent for a message. This is read-only: the endpoint
+ * accepts `apply=false` only and creates no tasks or escalations, so there is
+ * nothing to invalidate. The recommendation is returned and displayed as-is.
+ */
+export function useRunAgentAnalysis(conversationId: string) {
+  return useMutation({
+    mutationFn: (messageId: string) =>
+      api.post<AgentDecision>(`/api/v1/conversations/${conversationId}/agent/run`, {
+        message_id: messageId,
+        apply: false,
+      }),
   });
 }
 
