@@ -17,6 +17,12 @@ class ConversationCreate(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
 
+class ConversationUpdate(BaseModel):
+    status: ConversationStatus
+
+    model_config = ConfigDict(extra="ignore")
+
+
 class ConversationRead(BaseModel):
     id: UUID
     tenant_id: UUID

@@ -86,6 +86,16 @@ export interface InboxResponse {
   total_pages: number;
 }
 
+export interface ConversationItem {
+  id: UUID;
+  tenant_id: UUID;
+  client_name: string;
+  client_contact: string | null;
+  status: ConversationStatus;
+  created_at: ISODateTime;
+  updated_at: ISODateTime;
+}
+
 export interface ConversationMessage {
   id: UUID;
   tenant_id: UUID;

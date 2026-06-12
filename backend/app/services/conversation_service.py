@@ -19,12 +19,14 @@ from app.schemas.conversation import (
     ConversationDetailAuditEvent,
     ConversationDetailMessage,
     ConversationDetailResponse,
+    ConversationUpdate,
 )
 from app.schemas.escalation import EscalationRead
 from app.schemas.suggested_reply import SuggestedReplyRead
 from app.schemas.task import TaskRead
 from app.services.audit_log_service import (
     AUDIT_EVENT_CONVERSATION_DETAIL_VIEWED,
+    AUDIT_EVENT_CONVERSATION_STATUS_CHANGED,
     AuditLogService,
 )
 from app.services.rag_service import retrieve
@@ -70,6 +72,34 @@ class ConversationService:
 
     async def list_conversations(self, ctx: TenantContext) -> list[Conversation]:
         return await self.conversations.list(ctx.tenant_id)
+
+    async def update_conversation(
+        self,
+        conversation_id: UUID,
+        payload: ConversationUpdate,
+        ctx: TenantContext,
+    ) -> Conversation:
+        conversation = await self.get_tenant_conversation_or_403(conversation_id, ctx)
+        old_status = conversation.status
+        conversation.status = payload.status
+
+        AuditLogService.record(
+            self.session,
+            tenant_id=ctx.tenant_id,
+            actor_user_id=ctx.user_id,
+            event_type=AUDIT_EVENT_CONVERSATION_STATUS_CHANGED,
+            resource_type="conversation",
+            resource_id=conversation.id,
+            details={
+                "conversation_id": conversation.id,
+                "old_status": old_status,
+                "new_status": conversation.status,
+                "user_id": ctx.user_id,
+            },
+        )
+        await self.session.commit()
+        await self.session.refresh(conversation)
+        return conversation
 
     async def get_conversation_detail(
         self,

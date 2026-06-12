@@ -2,6 +2,8 @@ import { api } from "@/lib/api";
 import type {
   AuditLog,
   ConversationDetail,
+  ConversationItem,
+  ConversationStatus,
   DocumentItem,
   DocumentType,
   Escalation,
@@ -148,6 +150,15 @@ export function useUpdateReply(conversationId: string) {
       suggested_text?: string;
     }) =>
       api.patch<SuggestedReply>(`/api/v1/suggested-replies/${replyId}`, { status, suggested_text }),
+    onSuccess: invalidate,
+  });
+}
+
+export function useUpdateConversation(conversationId: string) {
+  const invalidate = useInvalidateConversation(conversationId);
+  return useMutation({
+    mutationFn: ({ status }: { status: ConversationStatus }) =>
+      api.patch<ConversationItem>(`/api/v1/conversations/${conversationId}`, { status }),
     onSuccess: invalidate,
   });
 }

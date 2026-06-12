@@ -29,6 +29,7 @@ import {
   useCreateEscalation,
   useCreateTask,
   useGenerateReply,
+  useUpdateConversation,
   useUpdateReply,
 } from "@/hooks/queries";
 import { formatConfidence, formatDateTime, humanize } from "@/lib/format";
@@ -49,6 +50,7 @@ export function MessageDetailPage() {
 
   const generate = useGenerateReply(conversationId);
   const updateReply = useUpdateReply(conversationId);
+  const updateConversation = useUpdateConversation(conversationId);
 
   const [taskOpen, setTaskOpen] = useState(false);
   const [escalateOpen, setEscalateOpen] = useState(false);
@@ -140,11 +142,19 @@ export function MessageDetailPage() {
               label="Mark as resolved"
               variant="ghost"
               size="sm"
+              loading={updateConversation.isPending}
+              disabled={data.conversation_status === "closed"}
               onClick={() =>
-                toast("Resolution is managed via tasks and escalations", {
-                  description:
-                    "A dedicated conversation-status endpoint isn't available in the current API.",
-                })
+                updateConversation.mutate(
+                  { status: "closed" },
+                  {
+                    onSuccess: () => toast.success("Conversation marked as resolved"),
+                    onError: (e) =>
+                      toast.error(
+                        e instanceof Error ? e.message : "Could not mark conversation resolved",
+                      ),
+                  },
+                )
               }
             />
           </div>

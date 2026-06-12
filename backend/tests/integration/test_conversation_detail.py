@@ -6,7 +6,10 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.audit_log import AuditLog
-from app.services.audit_log_service import AUDIT_EVENT_CONVERSATION_DETAIL_VIEWED
+from app.services.audit_log_service import (
+    AUDIT_EVENT_CONVERSATION_DETAIL_VIEWED,
+    AUDIT_EVENT_CONVERSATION_STATUS_CHANGED,
+)
 
 
 pytestmark = pytest.mark.asyncio
@@ -44,6 +47,19 @@ async def get_detail(client: AsyncClient, token: str, conversation_id: str):
     return await client.get(
         f"/api/v1/conversations/{conversation_id}/detail",
         headers=auth_headers(token),
+    )
+
+
+async def update_conversation_status(
+    client: AsyncClient,
+    token: str,
+    conversation_id: str,
+    status: str,
+):
+    return await client.patch(
+        f"/api/v1/conversations/{conversation_id}",
+        headers=auth_headers(token),
+        json={"status": status},
     )
 
 
@@ -168,6 +184,102 @@ async def test_detail_view_creates_audit_log_event(
         item["event_type"] == AUDIT_EVENT_CONVERSATION_DETAIL_VIEWED
         for item in response.json()["audit_timeline"]
     )
+
+
+async def test_tenant_user_can_update_own_conversation_status_to_closed(
+    client: AsyncClient,
+):
+    token = await login(client)
+    simulated = await create_simulator_message(client, token, "Can you send pricing?")
+
+    response = await update_conversation_status(
+        client,
+        token,
+        simulated["conversation_id"],
+        "closed",
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["id"] == simulated["conversation_id"]
+    assert data["status"] == "closed"
+    assert data["tenant_id"] == simulated["tenant_id"]
+
+
+async def test_cross_tenant_user_cannot_update_conversation_status(
+    client: AsyncClient,
+):
+    elegant_token = await login(client)
+    royal_token = await login(
+        client,
+        email="admin@royal-events.demo",
+        password="demo-password-2",
+        tenant_slug="royal-events-agency",
+    )
+    simulated = await create_simulator_message(client, elegant_token, "Elegant-only update")
+
+    response = await update_conversation_status(
+        client,
+        royal_token,
+        simulated["conversation_id"],
+        "closed",
+    )
+
+    assert response.status_code == 403
+
+
+async def test_update_missing_conversation_status_returns_404(client: AsyncClient):
+    token = await login(client)
+
+    response = await update_conversation_status(client, token, str(uuid4()), "closed")
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "conversation not found"
+
+
+async def test_conversation_status_update_creates_audit_log(
+    client: AsyncClient,
+    db_session: AsyncSession,
+):
+    token = await login(client)
+    simulated = await create_simulator_message(client, token, "Can you send pricing?")
+
+    response = await update_conversation_status(
+        client,
+        token,
+        simulated["conversation_id"],
+        "closed",
+    )
+
+    assert response.status_code == 200
+    result = await db_session.execute(
+        select(AuditLog).where(AuditLog.event_type == AUDIT_EVENT_CONVERSATION_STATUS_CHANGED)
+    )
+    logs = list(result.scalars().all())
+    assert len(logs) == 1
+    assert logs[0].resource_type == "conversation"
+    assert logs[0].resource_id == simulated["conversation_id"]
+    assert logs[0].actor_user_id is not None
+    assert logs[0].details["conversation_id"] == simulated["conversation_id"]
+    assert logs[0].details["old_status"] == "open"
+    assert logs[0].details["new_status"] == "closed"
+
+
+async def test_conversation_detail_reflects_updated_status(client: AsyncClient):
+    token = await login(client)
+    simulated = await create_simulator_message(client, token, "Can you send pricing?")
+
+    update_response = await update_conversation_status(
+        client,
+        token,
+        simulated["conversation_id"],
+        "closed",
+    )
+    detail_response = await get_detail(client, token, simulated["conversation_id"])
+
+    assert update_response.status_code == 200
+    assert detail_response.status_code == 200
+    assert detail_response.json()["conversation_status"] == "closed"
 
 
 async def test_nonexistent_conversation_detail_returns_404(client: AsyncClient):
