@@ -258,6 +258,12 @@ export interface AgentRecommendedEscalation {
   reason: string | null;
 }
 
+/** Ids of records the agent created when applied. Null when not recommended or not applied. */
+export interface AgentApplied {
+  task_id: UUID | null;
+  escalation_id: UUID | null;
+}
+
 export interface AgentDecision {
   ran: boolean;
   skipped_reason: string | null;
@@ -269,4 +275,6 @@ export interface AgentDecision {
   human_review_required: boolean;
   confidence: string;
   audit_run_id: UUID;
+  /** Present only on an apply=true response; null for read-only analysis. */
+  applied: AgentApplied | null;
 }

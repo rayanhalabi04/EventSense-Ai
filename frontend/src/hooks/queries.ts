@@ -153,6 +153,30 @@ export function useRunAgentAnalysis(conversationId: string) {
   });
 }
 
+/**
+ * Apply an agent recommendation. Calls the same endpoint with `apply=true`,
+ * which creates (or reuses) the recommended task and/or escalation server-side.
+ * It still sends no client message and approves/sends no reply. On success the
+ * conversation, tasks, escalations, and inbox views are refreshed so the newly
+ * created records appear.
+ */
+export function useApplyAgentRecommendation(conversationId: string) {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (messageId: string) =>
+      api.post<AgentDecision>(`/api/v1/conversations/${conversationId}/agent/run`, {
+        message_id: messageId,
+        apply: true,
+      }),
+    onSuccess: () => {
+      void client.invalidateQueries({ queryKey: queryKeys.conversation(conversationId) });
+      void client.invalidateQueries({ queryKey: ["tasks"] });
+      void client.invalidateQueries({ queryKey: ["escalations"] });
+      void client.invalidateQueries({ queryKey: ["inbox"] });
+    },
+  });
+}
+
 export function useUpdateReply(conversationId: string) {
   const invalidate = useInvalidateConversation(conversationId);
   return useMutation({

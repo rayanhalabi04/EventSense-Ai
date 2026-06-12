@@ -2,22 +2,36 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { humanize } from "@/lib/format";
-import type { AgentDecision } from "@/lib/types";
-import { Bot, CheckCircle2, MinusCircle } from "lucide-react";
+import type { AgentApplied, AgentDecision } from "@/lib/types";
+import { Bot, CheckCircle2, MinusCircle, Wand2 } from "lucide-react";
 
 interface AgentAnalysisCardProps {
   decision: AgentDecision | undefined;
   running: boolean;
   disabled: boolean;
   onRun: () => void;
+  /** Apply the recommendation (apply=true). */
+  onApply: () => void;
+  applying: boolean;
+  /** Ids returned after a successful apply, if any. */
+  applied: AgentApplied | null | undefined;
 }
 
 /**
- * Dry-run focused-agent analysis. The agent only runs for risky/complex intents
- * and never creates tasks or escalations from here — this card shows the
- * recommendation only.
+ * Focused-agent analysis. "Run agent analysis" is read-only (apply=false) and
+ * shows a recommendation only. When the agent recommends a task and/or
+ * escalation, staff can manually "Apply recommendations" (apply=true) to create
+ * (or reuse) those records. No client message is ever sent from this card.
  */
-export function AgentAnalysisCard({ decision, running, disabled, onRun }: AgentAnalysisCardProps) {
+export function AgentAnalysisCard({
+  decision,
+  running,
+  disabled,
+  onRun,
+  onApply,
+  applying,
+  applied,
+}: AgentAnalysisCardProps) {
   return (
     <Card>
       <CardHeader className="flex-row items-center justify-between space-y-0">
@@ -36,7 +50,12 @@ export function AgentAnalysisCard({ decision, running, disabled, onRun }: AgentA
               : "Run a read-only agent analysis to see recommended next steps. Nothing is created or sent."}
           </p>
         ) : decision.ran ? (
-          <AgentDecisionView decision={decision} />
+          <AgentDecisionView
+            decision={decision}
+            onApply={onApply}
+            applying={applying}
+            applied={applied}
+          />
         ) : (
           <div className="flex items-start gap-3 rounded-lg border border-border bg-muted/30 px-4 py-3">
             <MinusCircle className="mt-0.5 h-5 w-5 shrink-0 text-muted-foreground" />
@@ -57,7 +76,21 @@ export function AgentAnalysisCard({ decision, running, disabled, onRun }: AgentA
   );
 }
 
-function AgentDecisionView({ decision }: { decision: AgentDecision }) {
+function AgentDecisionView({
+  decision,
+  onApply,
+  applying,
+  applied,
+}: {
+  decision: AgentDecision;
+  onApply: () => void;
+  applying: boolean;
+  applied: AgentApplied | null | undefined;
+}) {
+  const recommendsAction =
+    decision.recommended_task.should_create || decision.recommended_escalation.should_escalate;
+  const hasApplied = Boolean(applied?.task_id || applied?.escalation_id);
+
   return (
     <div className="space-y-3">
       <div className="flex flex-wrap items-center gap-2">
@@ -94,9 +127,52 @@ function AgentDecisionView({ decision }: { decision: AgentDecision }) {
         </p>
       ) : null}
 
+      {recommendsAction ? (
+        <div className="space-y-3 rounded-lg border border-border bg-muted/30 px-4 py-3">
+          {hasApplied ? (
+            <div className="space-y-2">
+              <p className="flex items-center gap-2 text-sm font-medium text-foreground">
+                <CheckCircle2 className="h-4 w-4 text-emerald-600" /> Recommendations applied
+              </p>
+              {applied?.task_id ? <AppliedRow label="Task" id={applied.task_id} /> : null}
+              {applied?.escalation_id ? (
+                <AppliedRow label="Escalation" id={applied.escalation_id} />
+              ) : null}
+            </div>
+          ) : (
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <p className="text-sm text-foreground/90">
+                Create the recommended {decision.recommended_task.should_create ? "task" : ""}
+                {decision.recommended_task.should_create &&
+                decision.recommended_escalation.should_escalate
+                  ? " and "
+                  : ""}
+                {decision.recommended_escalation.should_escalate ? "escalation" : ""}.
+              </p>
+              <Button size="sm" loading={applying} onClick={onApply}>
+                <Wand2 className="h-4 w-4" /> Apply recommendations
+              </Button>
+            </div>
+          )}
+        </div>
+      ) : null}
+
       <p className="text-xs text-muted-foreground">
-        Recommendation only — no task, escalation, or client message is created from this analysis.
+        {recommendsAction
+          ? "Applying creates the recommended task and/or escalation only. No client message is sent and no reply is approved or sent."
+          : "Recommendation only — no task, escalation, or client message is created from this analysis."}
       </p>
+    </div>
+  );
+}
+
+function AppliedRow({ label, id }: { label: string; id: string }) {
+  return (
+    <div className="flex items-center justify-between gap-2">
+      <span className="text-sm text-foreground/90">{label}</span>
+      <code className="rounded bg-background px-1.5 py-0.5 font-mono text-xs text-muted-foreground">
+        {id}
+      </code>
     </div>
   );
 }

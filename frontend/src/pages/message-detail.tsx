@@ -26,6 +26,7 @@ import { Separator } from "@/components/ui/separator";
 import { toast } from "@/components/ui/sonner";
 import { Textarea } from "@/components/ui/textarea";
 import {
+  useApplyAgentRecommendation,
   useConversation,
   useCreateEscalation,
   useCreateTask,
@@ -54,6 +55,7 @@ export function MessageDetailPage() {
   const updateReply = useUpdateReply(conversationId);
   const updateConversation = useUpdateConversation(conversationId);
   const agent = useRunAgentAnalysis(conversationId);
+  const applyAgent = useApplyAgentRecommendation(conversationId);
 
   const [taskOpen, setTaskOpen] = useState(false);
   const [escalateOpen, setEscalateOpen] = useState(false);
@@ -230,11 +232,22 @@ export function MessageDetailPage() {
             decision={agent.data}
             running={agent.isPending}
             disabled={!latestMessageId}
+            applying={applyAgent.isPending}
+            applied={applyAgent.data?.applied}
             onRun={() => {
               if (!latestMessageId) return;
+              applyAgent.reset();
               agent.mutate(latestMessageId, {
                 onError: (e) =>
                   toast.error(e instanceof Error ? e.message : "Could not run agent analysis"),
+              });
+            }}
+            onApply={() => {
+              if (!latestMessageId) return;
+              applyAgent.mutate(latestMessageId, {
+                onSuccess: () => toast.success("Agent recommendations applied"),
+                onError: (e) =>
+                  toast.error(e instanceof Error ? e.message : "Could not apply recommendations"),
               });
             }}
           />
