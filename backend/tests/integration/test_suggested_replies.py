@@ -106,6 +106,136 @@ async def latest_generated_event(db_session: AsyncSession, reply_id: str) -> Aud
     return next(event for event in events if event.details.get("suggested_reply_id") == reply_id)
 
 
+async def test_e2e_supported_reply_is_grounded_in_tenant_document_and_audited(
+    client: AsyncClient,
+    db_session: AsyncSession,
+):
+    token = await login(client)
+    document = await create_document(
+        client,
+        token,
+        title="Elegant Garden Sparkler Policy",
+        document_type="faq",
+        content_text=(
+            "Sparkler exits are allowed only in the garden courtyard when the couple "
+            "books the safety attendant add-on."
+        ),
+    )
+    simulated = await create_simulator_message(
+        client,
+        token,
+        body="Are sparkler exits allowed in the garden courtyard?",
+    )
+
+    reply = await generate_reply(client, token, simulated["conversation_id"])
+
+    text = reply["suggested_text"].lower()
+    assert reply["answer_supported"] is True
+    assert reply["source_document_ids"] == [document["id"]]
+    assert reply["rag_sources"]
+    assert {source["document_id"] for source in reply["rag_sources"]} == {document["id"]}
+    assert "sparkler exits are allowed only in the garden courtyard" in text
+    assert "safety attendant add-on" in text
+
+    event = await latest_generated_event(db_session, reply["id"])
+    assert event.resource_type == "suggested_reply"
+    assert event.resource_id == reply["id"]
+    assert event.details["conversation_id"] == simulated["conversation_id"]
+    assert event.details["message_id"] == simulated["message_id"]
+    assert event.details["answer_supported"] is True
+    assert event.details["source_document_ids"] == [document["id"]]
+    assert event.details["source_document_titles"] == [document["title"]]
+
+    detail = await client.get(
+        f"/api/v1/conversations/{simulated['conversation_id']}/detail",
+        headers=auth_headers(token),
+    )
+    assert detail.status_code == 200
+    detail_data = detail.json()
+    assert detail_data["suggested_reply"]["id"] == reply["id"]
+    assert detail_data["suggested_reply"]["answer_supported"] is True
+    assert detail_data["rag_sources"]
+    assert {source["document_id"] for source in detail_data["rag_sources"]} == {document["id"]}
+
+
+async def test_e2e_unsupported_reply_refuses_without_sources_and_audits_refusal(
+    client: AsyncClient,
+    db_session: AsyncSession,
+):
+    token = await login(client)
+    await create_document(
+        client,
+        token,
+        title="Elegant Deposit Policy",
+        document_type="deposit_policy",
+        content_text="The booking deposit is non-refundable after booking confirmation.",
+    )
+    simulated = await create_simulator_message(
+        client,
+        token,
+        body="Can you book our honeymoon flight to Paris?",
+    )
+
+    reply = await generate_reply(client, token, simulated["conversation_id"])
+
+    text = reply["suggested_text"].lower()
+    assert reply["answer_supported"] is False
+    assert reply["refusal_reason"] is not None
+    assert reply["source_document_ids"] == []
+    assert reply["rag_sources"] == []
+    assert "could not find enough information" in text
+    assert "uploaded company documents" in text
+    assert "flight to paris" not in text
+    assert "non-refundable" not in text
+
+    events = await audit_events(db_session, AUDIT_EVENT_SUGGESTED_REPLY_REFUSED_NO_SOURCE)
+    event = next(event for event in events if event.details.get("suggested_reply_id") == reply["id"])
+    assert event.resource_type == "suggested_reply"
+    assert event.resource_id == reply["id"]
+    assert event.details["answer_supported"] is False
+    assert event.details["source_document_ids"] == []
+    assert event.details["refusal_reason"] is not None
+
+
+async def test_e2e_cross_tenant_suggested_reply_does_not_use_other_tenant_sources(
+    client: AsyncClient,
+):
+    elegant_token = await login(client)
+    royal_token = await login_royal(client)
+    elegant_document = await create_document(
+        client,
+        elegant_token,
+        title="Elegant Candle Rules",
+        document_type="faq",
+        content_text="Candles are allowed only inside glass holders in the ballroom.",
+    )
+    royal_document = await create_document(
+        client,
+        royal_token,
+        title="Royal Orchid Dome Policy",
+        document_type="faq",
+        content_text=(
+            "Orchid dome ceiling lighting is included only in the Royal Signature "
+            "package."
+        ),
+    )
+    simulated = await create_simulator_message(
+        client,
+        elegant_token,
+        body="Is orchid dome ceiling lighting included in our package?",
+    )
+
+    reply = await generate_reply(client, elegant_token, simulated["conversation_id"])
+
+    assert reply["answer_supported"] is False
+    assert reply["source_document_ids"] == []
+    assert reply["rag_sources"] == []
+    assert royal_document["id"] not in reply["source_document_ids"]
+    assert elegant_document["id"] not in reply["source_document_ids"]
+    assert "orchid dome ceiling lighting is included" not in reply["suggested_text"].lower()
+    assert "royal signature" not in reply["suggested_text"].lower()
+
+
 async def test_generate_reply_for_elegant_deposit_question(
     client: AsyncClient,
     db_session: AsyncSession,
