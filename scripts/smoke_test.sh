@@ -124,6 +124,42 @@ except Exception:
 PY
 }
 
+json_sources_match() { # json document_id marker
+  # True if any rag_source matches the created document id, or (failing that)
+  # carries the unique smoke marker in its id/title/content. This keeps the
+  # check strict (it must be *our* document) without depending on RAG ranking
+  # the newly created doc at position 0 versus older similar smoke documents.
+  JSON_INPUT="$1" python3 - "$2" "$3" <<'PY'
+import json
+import os
+import sys
+
+doc_id = sys.argv[1]
+marker = sys.argv[2]
+try:
+    data = json.loads(os.environ.get("JSON_INPUT", ""))
+    sources = data.get("rag_sources", []) if isinstance(data, dict) else []
+    matched = False
+    for src in sources:
+        if not isinstance(src, dict):
+            continue
+        if doc_id and str(src.get("document_id")) == doc_id:
+            matched = True
+            break
+        if marker:
+            blob = " ".join(
+                str(src.get(field, ""))
+                for field in ("document_id", "document_title", "content")
+            )
+            if marker in blob:
+                matched = True
+                break
+    print("true" if matched else "false")
+except Exception:
+    print("false")
+PY
+}
+
 json_audit_has_reply_event() { # json event_type suggested_reply_id
   JSON_INPUT="$1" python3 - "$2" "$3" <<'PY'
 import json
@@ -273,11 +309,16 @@ else
 fi
 
 # --- Check 4: create a tenant document for RAG grounding ---------------------
+# Each run embeds a unique marker so the document just created is the one that
+# strongly retrieves for the supported-reply check below, regardless of older
+# similar smoke documents already in the database.
 document_id=""
+smoke_marker=""
 if [ -n "${token}" ]; then
   smoke_stamp="$(date -u +%Y%m%d%H%M%S)"
-  doc_title="Smoke Sparkler Policy ${smoke_stamp}"
-  doc_text="Smoke policy: sparkler exits are allowed only in the garden courtyard when a safety attendant is booked."
+  smoke_marker="SMOKE_POLICY_${smoke_stamp}_${RANDOM}"
+  doc_title="Smoke Sparkler Policy ${smoke_marker}"
+  doc_text="${smoke_marker}: sparkler exits are allowed only in the garden courtyard when a safety attendant is booked."
   doc_payload="$(json_payload \
     title "${doc_title}" \
     document_type "faq" \
@@ -301,7 +342,7 @@ supported_reply_id=""
 if [ -n "${token}" ] && [ -n "${document_id}" ]; then
   supported_msg_payload="$(json_payload \
     client_name "Smoke Supported Client" \
-    body "Are sparkler exits allowed in the garden courtyard?")"
+    body "Are sparkler exits allowed in the garden courtyard with a safety attendant (${smoke_marker})?")"
   supported_msg_body="$(curl -s -X POST "${API_BASE_URL}/api/v1/simulator/messages" \
     -H 'Content-Type: application/json' -H "Authorization: Bearer ${token}" \
     -d "${supported_msg_payload}" 2>/dev/null || true)"
@@ -313,14 +354,14 @@ if [ -n "${token}" ] && [ -n "${document_id}" ]; then
     supported_reply_id="$(json_get "${supported_reply_body}" id)"
     supported="$(json_get "${supported_reply_body}" answer_supported)"
     source_count="$(json_len "${supported_reply_body}" rag_sources)"
-    source_document_id="$(json_get "${supported_reply_body}" rag_sources.0.document_id)"
+    sources_match="$(json_sources_match "${supported_reply_body}" "${document_id}" "${smoke_marker}")"
     if [ -n "${supported_reply_id}" ] \
       && [ "${supported}" = "true" ] \
       && [ "${source_count}" -gt 0 ] \
-      && [ "${source_document_id}" = "${document_id}" ]; then
-      record "suggested_reply_supported" true "reply id=${supported_reply_id} grounded in created document"
+      && [ "${sources_match}" = "true" ]; then
+      record "suggested_reply_supported" true "reply id=${supported_reply_id} grounded in created smoke document (${smoke_marker})"
     else
-      record "suggested_reply_supported" false "expected supported reply with source document ${document_id}"
+      record "suggested_reply_supported" false "expected supported reply grounded in ${smoke_marker} (document ${document_id})"
     fi
   else
     record "suggested_reply_supported" false "supported simulator message was not created"
