@@ -4,7 +4,9 @@
 #
 # Checks: /health readiness -> demo login -> classify a simulated message ->
 # create a tenant document -> generate a grounded suggested reply -> verify an
-# unsupported refusal -> verify audit logs.
+# unsupported refusal -> verify audit logs -> run the dry-run focused agent
+# (apply=false) on a risky message (recommends escalation, writes nothing) and
+# confirm it skips a non-risky message.
 #
 # Prints [PASS]/[FAIL]/[SKIP] per check, writes a machine-readable result to
 # eval-artifacts/docker_smoke.json (consumed by Spec 015 `docker_smoke`), and
@@ -137,6 +139,30 @@ try:
         if any(
             item.get("event_type") == event_type
             and item.get("details", {}).get("suggested_reply_id") == reply_id
+            for item in items
+        )
+        else "false"
+    )
+except Exception:
+    print("false")
+PY
+}
+
+json_audit_has_event_for_resource() { # json event_type resource_id
+  JSON_INPUT="$1" python3 - "$2" "$3" <<'PY'
+import json
+import os
+import sys
+
+event_type = sys.argv[1]
+resource_id = sys.argv[2]
+try:
+    items = json.loads(os.environ.get("JSON_INPUT", ""))
+    print(
+        "true"
+        if any(
+            item.get("event_type") == event_type
+            and str(item.get("resource_id")) == resource_id
             for item in items
         )
         else "false"
@@ -351,6 +377,114 @@ if [ -n "${token}" ]; then
   fi
 else
   record "audit_ai_flow" false "skipped: no auth token"
+fi
+
+# --- Check 8: dry-run agent runs + recommends escalation for a risky message -
+# The focused agent only runs for risky/complex intents and never writes here
+# (apply=false). A complaint should run the agent and recommend escalation.
+risky_conversation_id=""
+risky_msg_id=""
+if [ -n "${token}" ]; then
+  risky_msg_payload="$(json_payload \
+    client_name "Smoke Risky Client" \
+    body "I am absolutely furious and disappointed. Your service was terrible and unacceptable.")"
+  risky_msg_body="$(curl -s -X POST "${API_BASE_URL}/api/v1/simulator/messages" \
+    -H 'Content-Type: application/json' -H "Authorization: Bearer ${token}" \
+    -d "${risky_msg_payload}" 2>/dev/null || true)"
+  risky_conversation_id="$(json_get "${risky_msg_body}" conversation_id)"
+  risky_msg_id="$(json_get "${risky_msg_body}" message_id)"
+  if [ -n "${risky_conversation_id}" ] && [ -n "${risky_msg_id}" ]; then
+    agent_payload='{"message_id":"'"${risky_msg_id}"'","apply":false}'
+    agent_file="/tmp/smoke_agent.$$"
+    agent_code="$(curl -s -o "${agent_file}" -w '%{http_code}' \
+      -X POST "${API_BASE_URL}/api/v1/conversations/${risky_conversation_id}/agent/run" \
+      -H 'Content-Type: application/json' -H "Authorization: Bearer ${token}" \
+      -d "${agent_payload}" 2>/dev/null)"
+    if [ -z "${agent_code}" ]; then agent_code="000"; fi
+    agent_body="$(cat "${agent_file}" 2>/dev/null || true)"
+    rm -f "${agent_file}"
+    agent_ran="$(json_get "${agent_body}" ran)"
+    agent_escalate="$(json_get "${agent_body}" recommended_escalation.should_escalate)"
+    agent_trigger="$(json_get "${agent_body}" trigger_intent)"
+    if [ "${agent_code}" = "200" ] \
+      && [ "${agent_ran}" = "true" ] \
+      && [ "${agent_escalate}" = "true" ]; then
+      record "agent_dry_run_risky" true "agent ran for intent=${agent_trigger}; recommended escalation (apply=false)"
+    else
+      record "agent_dry_run_risky" false "expected http=200 ran=true escalate=true (got http=${agent_code} ran=${agent_ran} escalate=${agent_escalate})"
+    fi
+  else
+    record "agent_dry_run_risky" false "risky simulator message was not created"
+  fi
+else
+  record "agent_dry_run_risky" false "skipped: no auth token"
+fi
+
+# --- Check 9: dry-run agent creates no tasks or escalations ------------------
+if [ -n "${token}" ] && [ -n "${risky_conversation_id}" ]; then
+  risky_detail_body="$(curl -s \
+    "${API_BASE_URL}/api/v1/conversations/${risky_conversation_id}/detail" \
+    -H "Authorization: Bearer ${token}" 2>/dev/null || true)"
+  agent_task_count="$(json_len "${risky_detail_body}" tasks)"
+  agent_esc_count="$(json_len "${risky_detail_body}" escalations)"
+  if [ "${agent_task_count}" = "0" ] && [ "${agent_esc_count}" = "0" ]; then
+    record "agent_dry_run_no_writes" true "dry-run created no tasks/escalations (tasks=0 escalations=0)"
+  else
+    record "agent_dry_run_no_writes" false "dry-run unexpectedly created records (tasks=${agent_task_count} escalations=${agent_esc_count})"
+  fi
+else
+  record "agent_dry_run_no_writes" false "skipped: no auth token or risky conversation"
+fi
+
+# --- Check 10: audit log records the agent decision -------------------------
+if [ -n "${token}" ] && [ -n "${risky_msg_id}" ]; then
+  agent_audit_body="$(curl -s "${API_BASE_URL}/api/v1/audit-logs?limit=200" \
+    -H "Authorization: Bearer ${token}" 2>/dev/null || true)"
+  has_agent_event="$(json_audit_has_event_for_resource \
+    "${agent_audit_body}" "agent.decision_created" "${risky_msg_id}")"
+  if [ "${has_agent_event}" = "true" ]; then
+    record "agent_audit_decision" true "found agent.decision_created audit event for the risky message"
+  else
+    record "agent_audit_decision" false "missing agent.decision_created audit event for the risky message"
+  fi
+else
+  record "agent_audit_decision" false "skipped: no auth token or risky message"
+fi
+
+# --- Check 11: dry-run agent skips a non-risky message ----------------------
+if [ -n "${token}" ]; then
+  nonrisky_msg_payload="$(json_payload \
+    client_name "Smoke Non-Risky Client" \
+    body "How much does your gold wedding package cost?")"
+  nonrisky_msg_body="$(curl -s -X POST "${API_BASE_URL}/api/v1/simulator/messages" \
+    -H 'Content-Type: application/json' -H "Authorization: Bearer ${token}" \
+    -d "${nonrisky_msg_payload}" 2>/dev/null || true)"
+  nonrisky_conversation_id="$(json_get "${nonrisky_msg_body}" conversation_id)"
+  nonrisky_msg_id="$(json_get "${nonrisky_msg_body}" message_id)"
+  if [ -n "${nonrisky_conversation_id}" ] && [ -n "${nonrisky_msg_id}" ]; then
+    nonrisky_agent_payload='{"message_id":"'"${nonrisky_msg_id}"'","apply":false}'
+    nonrisky_agent_file="/tmp/smoke_agent_nonrisky.$$"
+    nonrisky_agent_code="$(curl -s -o "${nonrisky_agent_file}" -w '%{http_code}' \
+      -X POST "${API_BASE_URL}/api/v1/conversations/${nonrisky_conversation_id}/agent/run" \
+      -H 'Content-Type: application/json' -H "Authorization: Bearer ${token}" \
+      -d "${nonrisky_agent_payload}" 2>/dev/null)"
+    if [ -z "${nonrisky_agent_code}" ]; then nonrisky_agent_code="000"; fi
+    nonrisky_agent_body="$(cat "${nonrisky_agent_file}" 2>/dev/null || true)"
+    rm -f "${nonrisky_agent_file}"
+    nonrisky_ran="$(json_get "${nonrisky_agent_body}" ran)"
+    nonrisky_skipped="$(json_get "${nonrisky_agent_body}" skipped_reason)"
+    if [ "${nonrisky_agent_code}" = "200" ] \
+      && [ "${nonrisky_ran}" = "false" ] \
+      && [ "${nonrisky_skipped}" = "intent_not_in_trigger_set" ]; then
+      record "agent_dry_run_non_risky" true "non-risky message skipped (skipped_reason=intent_not_in_trigger_set)"
+    else
+      record "agent_dry_run_non_risky" false "expected http=200 ran=false skipped_reason=intent_not_in_trigger_set (got http=${nonrisky_agent_code} ran=${nonrisky_ran} skipped=${nonrisky_skipped})"
+    fi
+  else
+    record "agent_dry_run_non_risky" false "non-risky simulator message was not created"
+  fi
+else
+  record "agent_dry_run_non_risky" false "skipped: no auth token"
 fi
 
 # --- Write the JSON artifact -------------------------------------------------
