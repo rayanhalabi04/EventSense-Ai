@@ -7,13 +7,24 @@ introduced in a later phase.
 """
 from uuid import UUID
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 
 CONFIDENCE_HIGH = "high"
 CONFIDENCE_LOW = "low"
 
 SKIPPED_REASON_NOT_TRIGGER = "intent_not_in_trigger_set"
+
+
+class AgentRunRequest(BaseModel):
+    """Body for ``POST .../agent/run``. ``tenant_id`` is intentionally absent and
+    forbidden — tenant identity comes only from the JWT context."""
+
+    message_id: UUID
+    apply: bool = False
+
+    # Reject any unexpected field (e.g. a smuggled ``tenant_id``) with a 422.
+    model_config = ConfigDict(extra="forbid")
 
 
 class RecommendedTask(BaseModel):

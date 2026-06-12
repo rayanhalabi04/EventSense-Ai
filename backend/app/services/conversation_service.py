@@ -225,6 +225,24 @@ class ConversationService:
         await self.get_tenant_conversation_or_403(conversation_id, ctx)
         return await self.suggested_replies.list_for_conversation(ctx.tenant_id, conversation_id)
 
+    async def get_tenant_inbound_message_or_error(
+        self,
+        conversation_id: UUID,
+        message_id: UUID,
+        ctx: TenantContext,
+    ) -> tuple[Conversation, Message]:
+        """Resolve a specific inbound message within a tenant-owned conversation.
+
+        Reuses the same ownership checks as suggested-reply generation:
+        404 (missing), 403 (cross-tenant), 400 (message not in conversation /
+        not inbound). Lets the agent endpoint avoid duplicating this logic.
+        """
+        conversation = await self.get_tenant_conversation_or_403(conversation_id, ctx)
+        message = await self._resolve_inbound_message(message_id, conversation, ctx)
+        # ``message`` is only None when no message_id is supplied; here it is required.
+        assert message is not None
+        return conversation, message
+
     async def _resolve_inbound_message(
         self,
         requested_message_id: UUID | None,

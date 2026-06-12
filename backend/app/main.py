@@ -5,6 +5,7 @@ from fastapi.responses import JSONResponse
 
 from app.api import auth as root_auth
 from app.api.v1 import (
+    agent,
     audit_logs,
     auth,
     conversations,
@@ -49,6 +50,7 @@ app.include_router(tenants.router, prefix="/api/v1/tenants", tags=["tenants"])
 app.include_router(tenants.admin_router, prefix="/api/v1/admin", tags=["admin"])
 app.include_router(conversations.router, prefix="/api/v1/conversations", tags=["conversations"])
 app.include_router(messages.router, prefix="/api/v1/conversations", tags=["messages"])
+app.include_router(agent.router, prefix="/api/v1/conversations", tags=["agent"])
 app.include_router(tasks.router, prefix="/api/v1/tasks", tags=["tasks"])
 app.include_router(escalations.router, prefix="/api/v1/escalations", tags=["escalations"])
 app.include_router(

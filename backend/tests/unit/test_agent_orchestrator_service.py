@@ -200,5 +200,6 @@ def test_no_method_accepts_tenant_id_from_input() -> None:
         assert "tenant_id" not in params
 
 
-def test_agent_endpoint_module_does_not_exist_yet() -> None:
-    assert importlib.util.find_spec("app.api.v1.agent") is None
+def test_agent_endpoint_module_exists() -> None:
+    # Phase B added the dry-run endpoint; the module is now present.
+    assert importlib.util.find_spec("app.api.v1.agent") is not None
