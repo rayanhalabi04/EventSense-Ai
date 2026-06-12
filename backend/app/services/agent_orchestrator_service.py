@@ -22,6 +22,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.tenant_context import TenantContext
 from app.models.message import Message
+from app.repositories.escalation_repository import EscalationRepository
+from app.repositories.task_repository import TaskRepository
 from app.schemas.agent import (
     CONFIDENCE_HIGH,
     CONFIDENCE_LOW,
@@ -69,6 +71,10 @@ AGENT_TRIGGER_INTENTS = frozenset(
 # A risk_level outside this set (including None) is treated as missing/unclear,
 # which forces a human-review fallback.
 _KNOWN_RISK_LEVELS = frozenset({RISK_LEVEL_LOW, RISK_LEVEL_MEDIUM, RISK_LEVEL_HIGH})
+
+# Provenance marker stamped on agent-created tasks/escalations. The pair
+# (tenant_id, source_type=agent, source_message_id) keeps ``apply`` idempotent.
+AGENT_SOURCE_TYPE = "agent"
 
 
 class AgentOrchestratorService:
@@ -156,33 +162,55 @@ class AgentOrchestratorService:
             raise RuntimeError("apply_decision requires a database session")
 
         if decision.recommended_task.should_create:
-            task = await TaskService(self.session).create_task(
-                TaskCreate(
-                    conversation_id=conversation_id,
-                    message_id=message.id,
-                    title=self._task_title(decision),
-                    description=self._task_description(decision, message),
-                    # Assign to the acting user (always in-tenant); the service
-                    # validates this and falls back to unassigned if None.
-                    assigned_to_user_id=ctx.user_id,
-                ),
-                ctx,
+            # Idempotent: reuse an existing agent task for this message instead of
+            # creating a duplicate. Human/UI tasks (source_type NULL) are ignored.
+            existing_task = await TaskRepository(self.session).find_by_source(
+                ctx.tenant_id,
+                source_type=AGENT_SOURCE_TYPE,
+                source_message_id=message.id,
             )
-            applied.task_id = task.id
+            if existing_task is not None:
+                applied.task_id = existing_task.id
+            else:
+                task = await TaskService(self.session).create_task(
+                    TaskCreate(
+                        conversation_id=conversation_id,
+                        message_id=message.id,
+                        title=self._task_title(decision),
+                        description=self._task_description(decision, message),
+                        # Assign to the acting user (always in-tenant); the service
+                        # validates this and falls back to unassigned if None.
+                        assigned_to_user_id=ctx.user_id,
+                    ),
+                    ctx,
+                    source_type=AGENT_SOURCE_TYPE,
+                    source_message_id=message.id,
+                )
+                applied.task_id = task.id
 
         if decision.recommended_escalation.should_escalate:
-            escalation = await EscalationService(self.session).create_escalation(
-                EscalationCreate(
-                    conversation_id=conversation_id,
-                    message_id=message.id,
-                    # Manager assignment is optional; the service leaves the
-                    # escalation in the unassigned manager queue.
-                    ai_summary=self._escalation_summary(decision, message),
-                    suggested_next_step="Manager review recommended by the focused agent.",
-                ),
-                ctx,
+            existing_escalation = await EscalationRepository(self.session).find_by_source(
+                ctx.tenant_id,
+                source_type=AGENT_SOURCE_TYPE,
+                source_message_id=message.id,
             )
-            applied.escalation_id = escalation.id
+            if existing_escalation is not None:
+                applied.escalation_id = existing_escalation.id
+            else:
+                escalation = await EscalationService(self.session).create_escalation(
+                    EscalationCreate(
+                        conversation_id=conversation_id,
+                        message_id=message.id,
+                        # Manager assignment is optional; the service leaves the
+                        # escalation in the unassigned manager queue.
+                        ai_summary=self._escalation_summary(decision, message),
+                        suggested_next_step="Manager review recommended by the focused agent.",
+                    ),
+                    ctx,
+                    source_type=AGENT_SOURCE_TYPE,
+                    source_message_id=message.id,
+                )
+                applied.escalation_id = escalation.id
 
         return applied
 

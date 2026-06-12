@@ -46,6 +46,9 @@ class EscalationService:
         self,
         payload: EscalationCreate,
         ctx: TenantContext,
+        *,
+        source_type: str | None = None,
+        source_message_id: UUID | None = None,
     ) -> Escalation:
         await self._get_tenant_conversation_or_403(payload.conversation_id, ctx)
         message = await self._get_valid_message(payload.message_id, payload.conversation_id, ctx)
@@ -63,6 +66,8 @@ class EscalationService:
             ai_summary=payload.ai_summary,
             suggested_next_step=payload.suggested_next_step,
             status=payload.status,
+            source_type=source_type,
+            source_message_id=source_message_id,
             resolved_at=datetime.now(timezone.utc)
             if payload.status == EscalationStatus.resolved
             else None,

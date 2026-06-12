@@ -440,3 +440,141 @@ async def test_tenant_id_in_body_is_rejected(
     )
 
     assert response.status_code == 422
+
+
+# --- apply=true idempotency -------------------------------------------------
+
+
+async def test_apply_true_is_idempotent_for_task_and_escalation(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    demo_tenants: dict[str, Tenant],
+) -> None:
+    tenant = demo_tenants["elegant-weddings"]
+    token = await login(client)
+    conversation = await create_conversation(client, token)
+    message = await seed_inbound_message(
+        db_session,
+        tenant=tenant,
+        conversation_id=conversation["id"],
+        body="We must move the ceremony to tomorrow morning, urgent.",
+        intent_label="urgent_change",
+        risk_level="medium",
+    )
+
+    first = await run_agent(client, token, conversation["id"], str(message.id), apply=True)
+    second = await run_agent(client, token, conversation["id"], str(message.id), apply=True)
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    first_applied = first.json()["applied"]
+    second_applied = second.json()["applied"]
+
+    # Same ids returned on the repeat call...
+    assert second_applied["task_id"] == first_applied["task_id"]
+    assert second_applied["escalation_id"] == first_applied["escalation_id"]
+    assert first_applied["task_id"] is not None
+    assert first_applied["escalation_id"] is not None
+
+    # ...and no duplicate rows were created.
+    tasks = await _tasks_for(db_session, conversation["id"])
+    escalations = await _escalations_for(db_session, conversation["id"])
+    assert len(tasks) == 1
+    assert len(escalations) == 1
+    # Provenance is stamped on the agent records.
+    assert tasks[0].source_type == "agent"
+    assert tasks[0].source_message_id == message.id
+    assert escalations[0].source_type == "agent"
+    assert escalations[0].source_message_id == message.id
+
+
+async def test_apply_true_idempotent_task_only(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    demo_tenants: dict[str, Tenant],
+) -> None:
+    token = await login(client)
+    conversation = await create_conversation(client, token)
+    message = await seed_inbound_message(
+        db_session,
+        tenant=demo_tenants["elegant-weddings"],
+        conversation_id=conversation["id"],
+        body="I was charged twice and my payment is unconfirmed.",
+        intent_label="payment_issue",
+        risk_level="medium",
+    )
+
+    first = await run_agent(client, token, conversation["id"], str(message.id), apply=True)
+    second = await run_agent(client, token, conversation["id"], str(message.id), apply=True)
+
+    assert second.json()["applied"]["task_id"] == first.json()["applied"]["task_id"]
+    tasks = await _tasks_for(db_session, conversation["id"])
+    escalations = await _escalations_for(db_session, conversation["id"])
+    assert len(tasks) == 1
+    assert len(escalations) == 0
+
+
+async def test_apply_true_idempotent_escalation_only(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    demo_tenants: dict[str, Tenant],
+) -> None:
+    token = await login(client)
+    conversation = await create_conversation(client, token)
+    message = await seed_inbound_message(
+        db_session,
+        tenant=demo_tenants["elegant-weddings"],
+        conversation_id=conversation["id"],
+        body="This is unacceptable and I am very upset.",
+        intent_label="complaint",
+        risk_level="medium",
+    )
+
+    first = await run_agent(client, token, conversation["id"], str(message.id), apply=True)
+    second = await run_agent(client, token, conversation["id"], str(message.id), apply=True)
+
+    assert second.json()["applied"]["escalation_id"] == first.json()["applied"]["escalation_id"]
+    tasks = await _tasks_for(db_session, conversation["id"])
+    escalations = await _escalations_for(db_session, conversation["id"])
+    assert len(tasks) == 0
+    assert len(escalations) == 1
+
+
+async def test_agent_task_is_distinct_from_human_task(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    demo_tenants: dict[str, Tenant],
+) -> None:
+    token = await login(client)
+    conversation = await create_conversation(client, token)
+    message = await seed_inbound_message(
+        db_session,
+        tenant=demo_tenants["elegant-weddings"],
+        conversation_id=conversation["id"],
+        body="I was charged twice and my payment is unconfirmed.",
+        intent_label="payment_issue",
+        risk_level="medium",
+    )
+
+    # A human-created task on the same message (source_type NULL).
+    human = await client.post(
+        "/api/v1/tasks",
+        headers=auth_headers(token),
+        json={
+            "conversation_id": conversation["id"],
+            "message_id": str(message.id),
+            "title": "Human follow-up",
+        },
+    )
+    assert human.status_code == 201
+
+    # The agent still creates its own task, then dedups on repeat.
+    await run_agent(client, token, conversation["id"], str(message.id), apply=True)
+    await run_agent(client, token, conversation["id"], str(message.id), apply=True)
+
+    tasks = await _tasks_for(db_session, conversation["id"])
+    assert len(tasks) == 2  # one human (NULL source) + one agent
+    agent_tasks = [t for t in tasks if t.source_type == "agent"]
+    human_tasks = [t for t in tasks if t.source_type is None]
+    assert len(agent_tasks) == 1
+    assert len(human_tasks) == 1

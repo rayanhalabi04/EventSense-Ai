@@ -23,6 +23,7 @@ class Task(TimestampMixin, Base):
         Index("ix_tasks_tenant_id_status", "tenant_id", "status"),
         Index("ix_tasks_tenant_id_conversation_id", "tenant_id", "conversation_id"),
         Index("ix_tasks_tenant_id_assigned_to_user_id", "tenant_id", "assigned_to_user_id"),
+        Index("ix_tasks_tenant_id_source_message_id", "tenant_id", "source_message_id"),
     )
 
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
@@ -47,6 +48,10 @@ class Task(TimestampMixin, Base):
     created_by_user_id: Mapped[UUID] = mapped_column(
         Uuid(as_uuid=True), ForeignKey("users.id"), nullable=False
     )
+    # Provenance for idempotency. "agent" marks an agent-created record; NULL for
+    # human/UI-created. source_message_id is a plain dedup marker (no FK).
+    source_type: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    source_message_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True), nullable=True)
 
     conversation = relationship("Conversation", back_populates="tasks")
     message = relationship("Message", foreign_keys=[message_id])

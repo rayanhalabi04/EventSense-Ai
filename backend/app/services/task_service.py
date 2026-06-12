@@ -36,7 +36,14 @@ class TaskService:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="forbidden")
         return task
 
-    async def create_task(self, payload: TaskCreate, ctx: TenantContext) -> Task:
+    async def create_task(
+        self,
+        payload: TaskCreate,
+        ctx: TenantContext,
+        *,
+        source_type: str | None = None,
+        source_message_id: UUID | None = None,
+    ) -> Task:
         await self._get_tenant_conversation_or_403(payload.conversation_id, ctx)
         await self._validate_message(payload.message_id, payload.conversation_id, ctx)
         await self._validate_assigned_user(payload.assigned_to_user_id, ctx)
@@ -51,6 +58,8 @@ class TaskService:
             due_at=payload.due_at,
             status=payload.status,
             created_by_user_id=ctx.user_id,
+            source_type=source_type,
+            source_message_id=source_message_id,
         )
         await self.tasks.add(task)
 

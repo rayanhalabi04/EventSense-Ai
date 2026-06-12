@@ -42,6 +42,27 @@ class TaskRepository:
         )
         return list(result.scalars().all())
 
+    async def find_by_source(
+        self,
+        tenant_id: UUID,
+        *,
+        source_type: str,
+        source_message_id: UUID,
+    ) -> Task | None:
+        """Return the existing task created from a given source (tenant-scoped),
+        used to keep agent ``apply`` idempotent. At most one is expected."""
+        result = await self.session.execute(
+            select(Task)
+            .where(
+                Task.tenant_id == tenant_id,
+                Task.source_type == source_type,
+                Task.source_message_id == source_message_id,
+            )
+            .order_by(Task.created_at.asc(), Task.id.asc())
+            .limit(1)
+        )
+        return result.scalars().first()
+
     async def add(self, task: Task) -> Task:
         self.session.add(task)
         await self.session.flush()
