@@ -76,6 +76,42 @@ Stop the stack and remove database volumes:
 docker compose down -v
 ```
 
+### AI Evaluations
+
+Offline, deterministic evaluations of the AI features. They run inside the API
+image with the repo mounted (no database needed) and write artifacts to
+`eval-artifacts/` (gitignored). One command runs the gated set:
+
+```bash
+make eval-ai          # classifier + agent + guardrails (stops on first failure)
+```
+
+Or run them individually:
+
+```bash
+make eval-classifier  # intent classifier accuracy vs. a golden set
+make eval-agent       # dry-run agent decisions vs. a golden set
+make eval-guardrails  # guardrail red-team prompts (block / allow / redact)
+make eval-rag         # RAG retrieval metrics (informational only — see note)
+```
+
+What each proves:
+
+- **eval-classifier** — the intent classifier predicts the expected label across
+  all intents (pass threshold ≥ 0.80; writes `eval-artifacts/classifier_eval.json`).
+- **eval-agent** — the bounded dry-run agent recommends the correct action
+  (escalation / task / human-review / skip) for every intent/risk combination and
+  never runs for non-trigger intents (threshold 1.0, deterministic; writes
+  `eval-artifacts/agent_eval.json`).
+- **eval-guardrails** — input rails block unsafe/prompt-injection/cross-tenant
+  prompts, allow safe ones, and redact PII (gates via exit code; prints a report).
+- **eval-rag** — retrieval hit@3 / MRR / refusal / tenant-isolation metrics.
+  **Informational only:** it prints metrics but does not yet gate on a threshold,
+  so it is excluded from `make eval-ai`.
+
+`make eval-ai` exits non-zero if any gated eval fails, making it suitable for a
+future CI check.
+
 ### AI Suggested Replies
 
 Suggested replies are staff-review drafts only. They are never sent to clients
