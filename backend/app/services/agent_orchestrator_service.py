@@ -8,14 +8,15 @@ This service exists to prove the agent does **not** run freely:
   is no loop, no model-driven tool selection, and no recursion.
 - It is deterministic: decisions are rules over the message's already-computed
   ``intent_label`` and ``risk_level`` fields. No RAG, no LLM, no I/O.
-- It performs **no writes**. It creates no task and no escalation; it only
-  returns an ``AgentDecision`` recommendation. The optional audit record is the
-  sole side effect, and only when a session is supplied.
+- ``decide``/``run`` perform **no writes** beyond an optional audit record: they
+  only return an ``AgentDecision`` recommendation. Creating records is a separate,
+  explicit step (:meth:`apply_decision`) that the caller opts into with
+  ``apply=true``; it reuses the existing Task/Escalation services (no duplicated
+  validation, no new write logic here) and never sends a client message.
 - ``tenant_id`` is never accepted as input. The only tenant identity comes from
-  the JWT-derived :class:`TenantContext` passed to :meth:`run`, used purely to
-  stamp the audit record.
+  the JWT-derived :class:`TenantContext` passed to :meth:`run`/``apply_decision``.
 """
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -25,20 +26,25 @@ from app.schemas.agent import (
     CONFIDENCE_HIGH,
     CONFIDENCE_LOW,
     SKIPPED_REASON_NOT_TRIGGER,
+    AgentApplied,
     AgentDecision,
     RecommendedEscalation,
     RecommendedTask,
 )
+from app.schemas.escalation import EscalationCreate
+from app.schemas.task import TaskCreate
 from app.services.audit_log_service import (
     AUDIT_EVENT_AGENT_DECISION_CREATED,
     AUDIT_EVENT_AGENT_SKIPPED,
     AuditLogService,
 )
+from app.services.escalation_service import EscalationService
 from app.services.risk_detection_service import (
     RISK_LEVEL_HIGH,
     RISK_LEVEL_LOW,
     RISK_LEVEL_MEDIUM,
 )
+from app.services.task_service import TaskService
 
 
 INTENT_COMPLAINT = "complaint"
@@ -126,6 +132,93 @@ class AgentOrchestratorService:
         if self.session is not None:
             self._audit(decision, message, ctx)
         return decision
+
+    async def apply_decision(
+        self,
+        *,
+        decision: AgentDecision,
+        conversation_id: UUID,
+        message: Message,
+        ctx: TenantContext,
+    ) -> AgentApplied:
+        """Create the records the decision recommends, via the existing services.
+
+        Only acts on a decision that ``ran`` and recommends the record. Tenant /
+        conversation / message ownership and auditing are all handled by
+        ``TaskService.create_task`` / ``EscalationService.create_escalation`` —
+        this method adds no validation or write logic of its own. It never sends
+        a client message and never approves/sends a suggested reply.
+        """
+        applied = AgentApplied()
+        if not decision.ran:
+            return applied
+        if self.session is None:
+            raise RuntimeError("apply_decision requires a database session")
+
+        if decision.recommended_task.should_create:
+            task = await TaskService(self.session).create_task(
+                TaskCreate(
+                    conversation_id=conversation_id,
+                    message_id=message.id,
+                    title=self._task_title(decision),
+                    description=self._task_description(decision, message),
+                    # Assign to the acting user (always in-tenant); the service
+                    # validates this and falls back to unassigned if None.
+                    assigned_to_user_id=ctx.user_id,
+                ),
+                ctx,
+            )
+            applied.task_id = task.id
+
+        if decision.recommended_escalation.should_escalate:
+            escalation = await EscalationService(self.session).create_escalation(
+                EscalationCreate(
+                    conversation_id=conversation_id,
+                    message_id=message.id,
+                    # Manager assignment is optional; the service leaves the
+                    # escalation in the unassigned manager queue.
+                    ai_summary=self._escalation_summary(decision, message),
+                    suggested_next_step="Manager review recommended by the focused agent.",
+                ),
+                ctx,
+            )
+            applied.escalation_id = escalation.id
+
+        return applied
+
+    @staticmethod
+    def _readable_intent(decision: AgentDecision) -> str:
+        return (decision.trigger_intent or "message").replace("_", " ")
+
+    @staticmethod
+    def _task_title(decision: AgentDecision) -> str:
+        intent = AgentOrchestratorService._readable_intent(decision)
+        if decision.risk_level:
+            return f"Agent follow-up: {intent} ({decision.risk_level} risk)"
+        return f"Agent follow-up: {intent}"
+
+    @staticmethod
+    def _task_description(decision: AgentDecision, message: Message) -> str:
+        intent = AgentOrchestratorService._readable_intent(decision)
+        parts = [f"Created by the focused agent for a {intent} message."]
+        if message.body:
+            parts.append(f"Client message: {message.body}")
+        if decision.risk_reason:
+            parts.append(f"Risk ({decision.risk_level or 'unknown'}): {decision.risk_reason}")
+        parts.append("This is an agent recommendation — review before acting.")
+        return "\n\n".join(parts)
+
+    @staticmethod
+    def _escalation_summary(decision: AgentDecision, message: Message) -> str:
+        intent = AgentOrchestratorService._readable_intent(decision)
+        summary = f"Agent flagged a {intent} message"
+        if decision.risk_level:
+            summary += f" at {decision.risk_level} risk"
+        summary += "."
+        reason = decision.recommended_escalation.reason
+        if reason:
+            summary += f" Reason: {reason.replace('_', ' ')}."
+        return summary
 
     @staticmethod
     def _decide_task(intent: str) -> RecommendedTask:

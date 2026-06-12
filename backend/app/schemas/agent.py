@@ -42,10 +42,10 @@ class RecommendedEscalation(BaseModel):
 
 
 class AgentDecision(BaseModel):
-    """Bounded, deterministic dry-run recommendation for a single message.
+    """Bounded, deterministic recommendation for a single message.
 
-    Notably absent: any ``task_id``, ``escalation_id``, or ``applied`` field —
-    Phase A performs no writes, so there is nothing to reference.
+    This is the pure decision object. It carries no created-record ids — those
+    live on ``AgentRunResponse.applied`` only when the caller asked to apply.
     """
 
     ran: bool
@@ -58,3 +58,18 @@ class AgentDecision(BaseModel):
     human_review_required: bool
     confidence: str
     audit_run_id: UUID
+
+
+class AgentApplied(BaseModel):
+    """Ids of records the agent created when ``apply=true``. Each is null when
+    the decision did not recommend that record (or when ``apply=false``)."""
+
+    task_id: UUID | None = None
+    escalation_id: UUID | None = None
+
+
+class AgentRunResponse(AgentDecision):
+    """The decision plus, when ``apply=true``, the created record ids. For
+    ``apply=false`` ``applied`` is null and no records exist."""
+
+    applied: AgentApplied | None = None

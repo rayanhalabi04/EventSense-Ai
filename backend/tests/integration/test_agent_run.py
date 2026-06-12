@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.escalation import Escalation
 from app.models.audit_log import AuditLog
 from app.models.message import Message, MessageDirection
+from app.models.suggested_reply import SuggestedReply
 from app.models.tenant import Tenant
 from app.models.task import Task
 
@@ -214,7 +215,156 @@ async def test_dry_run_creates_no_task_or_escalation_but_audits(
     assert len(audit_events) == 1
 
 
-async def test_apply_true_is_rejected_and_creates_nothing(
+async def _tasks_for(db_session: AsyncSession, conversation_id: str) -> list[Task]:
+    result = await db_session.execute(
+        select(Task).where(Task.conversation_id == UUID(conversation_id))
+    )
+    return list(result.scalars().all())
+
+
+async def _escalations_for(db_session: AsyncSession, conversation_id: str) -> list[Escalation]:
+    result = await db_session.execute(
+        select(Escalation).where(Escalation.conversation_id == UUID(conversation_id))
+    )
+    return list(result.scalars().all())
+
+
+async def test_apply_true_payment_issue_creates_task_only(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    demo_tenants: dict[str, Tenant],
+) -> None:
+    tenant = demo_tenants["elegant-weddings"]
+    token = await login(client)
+    conversation = await create_conversation(client, token)
+    message = await seed_inbound_message(
+        db_session,
+        tenant=tenant,
+        conversation_id=conversation["id"],
+        body="I was charged twice and my payment is unconfirmed.",
+        intent_label="payment_issue",
+        risk_level="medium",
+    )
+
+    response = await run_agent(client, token, conversation["id"], str(message.id), apply=True)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ran"] is True
+    assert body["recommended_task"]["should_create"] is True
+    assert body["recommended_escalation"]["should_escalate"] is False
+    assert body["applied"]["task_id"] is not None
+    assert body["applied"]["escalation_id"] is None
+
+    tasks = await _tasks_for(db_session, conversation["id"])
+    escalations = await _escalations_for(db_session, conversation["id"])
+    assert len(tasks) == 1
+    assert len(escalations) == 0
+    # AC-9: created record belongs to the authenticated tenant.
+    assert tasks[0].tenant_id == tenant.id
+    assert str(tasks[0].id) == body["applied"]["task_id"]
+
+
+async def test_apply_true_complaint_creates_escalation_only(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    demo_tenants: dict[str, Tenant],
+) -> None:
+    tenant = demo_tenants["elegant-weddings"]
+    token = await login(client)
+    conversation = await create_conversation(client, token)
+    message = await seed_inbound_message(
+        db_session,
+        tenant=tenant,
+        conversation_id=conversation["id"],
+        body="This is unacceptable and I am very upset.",
+        intent_label="complaint",
+        risk_level="medium",
+    )
+
+    response = await run_agent(client, token, conversation["id"], str(message.id), apply=True)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["recommended_task"]["should_create"] is False
+    assert body["recommended_escalation"]["should_escalate"] is True
+    assert body["applied"]["task_id"] is None
+    assert body["applied"]["escalation_id"] is not None
+
+    tasks = await _tasks_for(db_session, conversation["id"])
+    escalations = await _escalations_for(db_session, conversation["id"])
+    assert len(tasks) == 0
+    assert len(escalations) == 1
+    assert escalations[0].tenant_id == tenant.id
+    # The escalation snapshots the message intent/risk via the existing service.
+    assert escalations[0].intent_label == "complaint"
+    assert str(escalations[0].id) == body["applied"]["escalation_id"]
+
+
+async def test_apply_true_urgent_change_creates_task_and_escalation(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    demo_tenants: dict[str, Tenant],
+) -> None:
+    tenant = demo_tenants["elegant-weddings"]
+    token = await login(client)
+    conversation = await create_conversation(client, token)
+    message = await seed_inbound_message(
+        db_session,
+        tenant=tenant,
+        conversation_id=conversation["id"],
+        body="We must move the ceremony to tomorrow morning, urgent.",
+        intent_label="urgent_change",
+        risk_level="medium",
+    )
+
+    response = await run_agent(client, token, conversation["id"], str(message.id), apply=True)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["applied"]["task_id"] is not None
+    assert body["applied"]["escalation_id"] is not None
+
+    tasks = await _tasks_for(db_session, conversation["id"])
+    escalations = await _escalations_for(db_session, conversation["id"])
+    assert len(tasks) == 1
+    assert len(escalations) == 1
+
+    # AC-10: creations are audited through the existing services.
+    task_audit = (
+        await db_session.execute(
+            select(AuditLog).where(AuditLog.event_type == "task.created")
+        )
+    ).scalars().all()
+    esc_audit = (
+        await db_session.execute(
+            select(AuditLog).where(AuditLog.event_type == "escalation.created")
+        )
+    ).scalars().all()
+    assert len(task_audit) == 1
+    assert len(esc_audit) == 1
+
+    # AC-11: no outbound client message and no suggested reply were created.
+    outbound = (
+        await db_session.execute(
+            select(Message).where(
+                Message.conversation_id == UUID(conversation["id"]),
+                Message.direction == MessageDirection.outbound,
+            )
+        )
+    ).scalars().all()
+    replies = (
+        await db_session.execute(
+            select(SuggestedReply).where(
+                SuggestedReply.conversation_id == UUID(conversation["id"])
+            )
+        )
+    ).scalars().all()
+    assert outbound == []
+    assert replies == []
+
+
+async def test_apply_true_non_trigger_creates_nothing(
     client: AsyncClient,
     db_session: AsyncSession,
     demo_tenants: dict[str, Tenant],
@@ -225,26 +375,45 @@ async def test_apply_true_is_rejected_and_creates_nothing(
         db_session,
         tenant=demo_tenants["elegant-weddings"],
         conversation_id=conversation["id"],
+        body="Can you send me the gold package pricing?",
+        intent_label="pricing_request",
+        risk_level="low",
     )
 
     response = await run_agent(client, token, conversation["id"], str(message.id), apply=True)
 
-    assert response.status_code == 422
-    assert response.json()["error_code"] == "agent_apply_not_enabled"
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ran"] is False
+    assert body["skipped_reason"] == "intent_not_in_trigger_set"
 
-    conv_id = UUID(conversation["id"])
-    tasks = (
-        await db_session.execute(
-            select(Task).where(Task.conversation_id == conv_id)
-        )
-    ).scalars().all()
-    escalations = (
-        await db_session.execute(
-            select(Escalation).where(Escalation.conversation_id == conv_id)
-        )
-    ).scalars().all()
+    tasks = await _tasks_for(db_session, conversation["id"])
+    escalations = await _escalations_for(db_session, conversation["id"])
     assert tasks == []
     assert escalations == []
+
+
+async def test_apply_false_still_creates_nothing(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    demo_tenants: dict[str, Tenant],
+) -> None:
+    token = await login(client)
+    conversation = await create_conversation(client, token)
+    message = await seed_inbound_message(
+        db_session,
+        tenant=demo_tenants["elegant-weddings"],
+        conversation_id=conversation["id"],
+        intent_label="urgent_change",
+        risk_level="high",
+    )
+
+    response = await run_agent(client, token, conversation["id"], str(message.id), apply=False)
+
+    assert response.status_code == 200
+    assert response.json()["applied"] is None
+    assert await _tasks_for(db_session, conversation["id"]) == []
+    assert await _escalations_for(db_session, conversation["id"]) == []
 
 
 async def test_tenant_id_in_body_is_rejected(
