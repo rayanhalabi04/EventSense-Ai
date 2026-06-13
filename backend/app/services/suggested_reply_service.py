@@ -276,6 +276,30 @@ def _compact_sources(rag_result: RagResult) -> list[dict[str, object]]:
     ]
 
 
+def _dedupe_sources_by_document(
+    sources: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    """Collapse multiple retrieved chunks of the same document into one source.
+
+    RAG can return several chunks from a single document, which would otherwise
+    show the same ``document_id`` multiple times to the user. We keep the
+    highest-scoring chunk per document and order the result by that best score
+    (descending). RAG already returns sources score-descending, so this
+    preserves the original ranking while leaving each document represented once.
+    """
+    best_by_document: dict[str, dict[str, object]] = {}
+    for source in sources:
+        document_id = str(source["document_id"])
+        existing = best_by_document.get(document_id)
+        if existing is None or float(source["score"]) > float(existing["score"]):
+            best_by_document[document_id] = source
+    return sorted(
+        best_by_document.values(),
+        key=lambda source: float(source["score"]),
+        reverse=True,
+    )
+
+
 def generate_reply_text(
     *,
     rag_result: RagResult,
@@ -294,11 +318,10 @@ def generate_reply_text(
         )
 
     compact = _compact_sources(rag_result)
-    source_document_ids: list[str] = []
-    for source in compact:
-        document_id = str(source["document_id"])
-        if document_id not in source_document_ids:
-            source_document_ids.append(document_id)
+    # Text is built from the full retrieved set (unchanged behavior), but the
+    # sources we surface/store are deduplicated so each document appears once.
+    deduped = _dedupe_sources_by_document(compact)
+    source_document_ids = [str(source["document_id"]) for source in deduped]
 
     text = build_supported_reply(
         sources=compact,
@@ -310,7 +333,7 @@ def generate_reply_text(
         answer_supported=True,
         refusal_reason=None,
         source_document_ids=source_document_ids,
-        rag_sources=compact,
+        rag_sources=deduped,
         generation_method=GENERATION_METHOD_TEMPLATE,
     )
 

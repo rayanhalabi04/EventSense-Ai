@@ -1,9 +1,12 @@
+from uuid import UUID
+
 import pytest
 from httpx import AsyncClient
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.audit_log import AuditLog
+from app.models.document import DocumentChunk
 from app.services.conversation_memory_service import ConversationMemoryMessage
 from app.services.llm_service import FakeLLMClient
 from app.services.audit_log_service import (
@@ -265,6 +268,75 @@ async def test_generate_reply_for_elegant_deposit_question(
     # The generated audit event records the answering document.
     events = await audit_events(db_session, AUDIT_EVENT_SUGGESTED_REPLY_GENERATED)
     assert any(e.details.get("suggested_reply_id") == reply["id"] for e in events)
+
+
+async def test_multi_chunk_document_is_deduped_to_single_source(
+    client: AsyncClient,
+    db_session: AsyncSession,
+):
+    """A document that chunks into several pieces appears once in rag_sources.
+
+    The deposit text below is long enough (and keyword-dense enough) that
+    chunking produces multiple matching chunks for one document. The reply must
+    still cite that document exactly once, with unique source_document_ids.
+    """
+    token = await login(client)
+    long_deposit_text = (
+        "The booking deposit reserves your wedding date with our planning team. "
+        "The booking deposit is non-refundable after booking confirmation. "
+        "Once booking confirmation is issued, the booking deposit is non-refundable "
+        "because we immediately begin reserving vendors for your event. "
+        "Our deposit policy clearly states that the booking deposit is non-refundable "
+        "after booking confirmation has been completed by both parties. "
+        "Couples should budget knowing the booking deposit is non-refundable after "
+        "booking confirmation, regardless of later changes to the guest list. "
+        "We confirm once more that after booking confirmation the booking deposit "
+        "remains non-refundable for the reserved wedding date. "
+        "The remaining balance is due sixty days before the wedding, and is separate "
+        "from the non-refundable booking deposit collected at booking confirmation. "
+        "Please contact our planning team with any question about the booking deposit "
+        "or the booking confirmation timeline for your wedding."
+    )
+    document = await create_document(
+        client,
+        token,
+        title="Elegant Deposit Policy (Detailed)",
+        document_type="deposit_policy",
+        content_text=long_deposit_text,
+    )
+
+    # Sanity: the document really does index into multiple chunks, so dedup is
+    # actually exercised (otherwise this test would pass trivially).
+    chunk_count = await db_session.scalar(
+        select(func.count())
+        .select_from(DocumentChunk)
+        .where(DocumentChunk.document_id == UUID(document["id"]))
+    )
+    assert chunk_count >= 2
+
+    simulated = await create_simulator_message(
+        client, token, body="Is the deposit refundable after booking confirmation?"
+    )
+    reply = await generate_reply(client, token, simulated["conversation_id"])
+
+    assert reply["answer_supported"] is True
+    # One source for the one document, even though several chunks were retrieved.
+    document_ids = [source["document_id"] for source in reply["rag_sources"]]
+    assert document_ids == [document["id"]]
+    assert len(document_ids) == len(set(document_ids))
+    assert reply["source_document_ids"] == [document["id"]]
+    # Grounded text behaviour is unchanged.
+    assert "non-refundable after booking confirmation" in reply["suggested_text"].lower()
+
+    # Conversation detail reads the stored (deduped) sources too.
+    detail = await client.get(
+        f"/api/v1/conversations/{simulated['conversation_id']}/detail",
+        headers=auth_headers(token),
+    )
+    assert detail.status_code == 200
+    detail_ids = [source["document_id"] for source in detail.json()["rag_sources"]]
+    assert detail_ids == [document["id"]]
+    assert len(detail_ids) == len(set(detail_ids))
 
 
 async def test_llm_enabled_success_creates_llm_suggestion(
