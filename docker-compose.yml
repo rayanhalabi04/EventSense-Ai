@@ -62,6 +62,9 @@ services:
       - "${API_HOST_PORT:-8000}:8000"
     volumes:
       - ./backend:/app
+      # Sample tenant documents read by `app.seed_demo` (read-only). They live
+      # outside ./backend, so mount them in explicitly.
+      - ./data/tenant-documents:/app/data/tenant-documents:ro
     depends_on:
       postgres:
         condition: service_healthy

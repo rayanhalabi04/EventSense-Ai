@@ -28,6 +28,69 @@ Expected response:
 {"status":"ok"}
 ```
 
+### Populate a Demo Environment
+
+A fresh stack starts with empty tenants. There are two seed modes depending on
+the kind of demo you want:
+
+```bash
+make seed-demo-docs   # documents only — for a live Telegram/WhatsApp demo
+make seed-demo-full   # full offline demo (alias: make seed-demo)
+```
+
+**`make seed-demo-docs`** seeds the tenants/users and each tenant's documents
+(chunked + embedded), then stops. The inbox, tasks, and escalations stay empty
+so you can demo the product against **real incoming Telegram/WhatsApp messages**
+— the knowledge base is ready, and every reply you generate is grounded in the
+seeded documents.
+
+**`make seed-demo-full`** builds everything `seed-demo-docs` does and then adds a
+self-contained **offline** demo: simulated conversations across every intent,
+grounded suggested replies, an unsupported-source refusal, and agent-created
+tasks/escalations — so every dashboard page has content without needing a live
+channel.
+
+Both modes build through the **real backend services** (no fake data): document
+upload + chunking/embedding via the Documents service, and (in full mode) the
+WhatsApp-simulator inbound path (intent classification + risk detection +
+guardrails + audit), suggested-reply generation, and the focused agent's apply
+flow. They are **safe to rerun** — documents are skipped by title and whole
+conversations are skipped when they already exist, so a second run is a no-op.
+No client message is ever sent: suggested replies stay `draft` and the agent
+only recommends/creates tasks and escalations.
+
+> **Tenant documents are sample files.** Each document's content is read from
+> `data/tenant-documents/<tenant-slug>/` (e.g. `pricing-packages.txt`,
+> `cancellation-policy.txt`, `deposit-policy.txt`, `faq.txt`) — the same kind of
+> file an agency would upload through the Documents page — rather than being
+> hardcoded. Edit those files (or add your own through the **Documents** page in
+> the UI) to change what the demo knows. The directory is mounted read-only into
+> the api container; set `TENANT_DOCUMENTS_DIR` to point the seed elsewhere.
+
+For a pristine demo (e.g. after running smoke tests, which add throwaway data),
+reset first so seeded documents are authoritative:
+
+```bash
+make reset            # destroys the DB volume, re-migrates, re-seeds base tenants
+make seed-demo-full   # populate the full demo (or seed-demo-docs for a live demo)
+```
+
+After seeding, log in and you should see a populated inbox, documents, message
+detail with RAG sources and suggested replies, an unsupported refusal, agent
+analysis/apply, tasks, escalations, and audit logs.
+
+**Demo logins** (created by the seed):
+
+| Tenant | Role | Email | Password |
+| --- | --- | --- | --- |
+| Elegant Weddings | manager | `admin@elegant-weddings.demo` | `demo-password-1` |
+| Elegant Weddings | staff | `staff@elegant-weddings.demo` | `demo-staff-1` |
+| Royal Events | manager | `admin@royal-events.demo` | `demo-password-2` |
+| Royal Events | staff | `staff@royal-events.demo` | `demo-staff-2` |
+
+> The two tenants have intentionally **different** pricing, cancellation, and
+> deposit policies so tenant-scoped RAG and isolation are visible in the demo.
+
 ### Step-by-step Startup
 
 If you want to run migrations explicitly:

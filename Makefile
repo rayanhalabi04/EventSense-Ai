@@ -1,5 +1,5 @@
 # EventSense AI — dockerized stack helpers (Spec 017)
-.PHONY: help up down logs reset smoke ps \
+.PHONY: help up down logs reset smoke ps seed-demo seed-demo-docs seed-demo-full \
 	eval-ai eval-classifier eval-agent eval-guardrails eval-rag
 
 help:
@@ -8,6 +8,9 @@ help:
 	@echo "  make down             Stop the stack (DB volume preserved)"
 	@echo "  make reset            Destroy DB volume and rebuild from scratch (re-migrate + re-seed)"
 	@echo "  make smoke            Run the smoke test against the running stack"
+	@echo "  make seed-demo-docs   Seed tenants/users + tenant documents only (live Telegram/WhatsApp demo setup)"
+	@echo "  make seed-demo-full   Populate a full offline demo (docs, conversations, replies, agent tasks/escalations)"
+	@echo "  make seed-demo        Alias for seed-demo-full"
 	@echo "  make logs             Tail stack logs"
 	@echo "  make ps               Show service status"
 	@echo "  make eval-ai          Run gated AI evals (classifier + agent + guardrails)"
@@ -28,6 +31,22 @@ reset:
 
 smoke:
 	./scripts/smoke_test.sh
+
+# Populate a realistic, tenant-isolated demo through the real backend services.
+# Tenant documents are read from sample files under data/tenant-documents/.
+# Idempotent: rerunning skips documents/conversations that already exist. Runs
+# inside the already-running api container (so it shares the app environment).
+#
+# seed-demo-docs: tenants/users + documents only (real live-channel demo setup).
+# seed-demo-full: docs + conversations/replies/agent tasks/escalations (offline).
+# seed-demo:      alias for seed-demo-full.
+seed-demo-docs:
+	docker compose exec -T api python -m app.seed_demo --mode docs
+
+seed-demo-full:
+	docker compose exec -T api python -m app.seed_demo --mode full
+
+seed-demo: seed-demo-full
 
 logs:
 	docker compose logs -f
