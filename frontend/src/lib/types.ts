@@ -262,11 +262,28 @@ export interface AgentRecommendedEscalation {
 export interface AgentApplied {
   task_id: UUID | null;
   escalation_id: UUID | null;
+  suggested_reply_id: UUID | null;
+}
+
+export interface AgentToolTrace {
+  tool_name: string;
+  status: string;
+  mode: "dry_run" | "apply" | string;
+  summary: string;
+  input_summary: string | null;
+  output_summary: string | null;
+  source_ids: string[];
+  suggested_reply_preview: string | null;
+  created_id: UUID | null;
+  recommended: Record<string, unknown> | null;
 }
 
 export interface AgentDecision {
   ran: boolean;
   skipped_reason: string | null;
+  message_id: UUID | null;
+  conversation_id: UUID | null;
+  intent_label: string | null;
   trigger_intent: string | null;
   risk_level: RiskLevel | null;
   risk_reason: string | null;
@@ -275,6 +292,7 @@ export interface AgentDecision {
   human_review_required: boolean;
   confidence: string;
   audit_run_id: UUID;
+  tools_used: AgentToolTrace[];
   /** Present only on an apply=true response; null for read-only analysis. */
   applied: AgentApplied | null;
 }

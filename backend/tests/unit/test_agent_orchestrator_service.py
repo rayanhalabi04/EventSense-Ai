@@ -1,7 +1,7 @@
-"""Unit tests for the Phase A agent orchestrator.
+"""Unit tests for the bounded tool-using agent orchestrator.
 
-These prove the agent does not run freely, that decisions are deterministic, and
-that no task/escalation is created and no endpoint exists yet.
+These prove the agent does not run freely, decisions/tool plans are
+deterministic, and dry-run decisions remain recommendation-only.
 """
 import importlib.util
 import inspect
@@ -9,11 +9,19 @@ from uuid import uuid4
 
 import pytest
 
+import app.services.agent_orchestrator_service as agent_module
+import app.services.agent.planner as planner_module
 from app.core.tenant_context import TenantContext
 from app.models.audit_log import AuditLog
 from app.models.message import Message
 from app.models.user import UserRole
 from app.schemas.agent import SKIPPED_REASON_NOT_TRIGGER
+from app.services.agent.planner import plan_tools
+from app.services.agent.tool_registry import (
+    EXPECTED_AGENT_TOOL_NAMES,
+    UnknownAgentToolError,
+    create_default_tool_registry,
+)
 from app.services.agent_orchestrator_service import (
     AGENT_TRIGGER_INTENTS,
     AgentOrchestratorService,
@@ -91,11 +99,11 @@ def test_human_escalation_recommends_escalation() -> None:
     assert decision.recommended_escalation.should_escalate is True
 
 
-def test_urgent_change_recommends_task_and_escalation() -> None:
+def test_urgent_change_recommends_task_without_escalation_when_not_high_risk() -> None:
     decision = AgentOrchestratorService().decide(_message("urgent_change", "medium"))
 
     assert decision.recommended_task.should_create is True
-    assert decision.recommended_escalation.should_escalate is True
+    assert decision.recommended_escalation.should_escalate is False
 
 
 def test_payment_issue_recommends_task() -> None:
@@ -115,7 +123,86 @@ def test_complaint_recommends_escalation() -> None:
     decision = AgentOrchestratorService().decide(_message("complaint", "medium"))
 
     assert decision.recommended_escalation.should_escalate is True
-    assert decision.recommended_task.should_create is False
+    assert decision.recommended_task.should_create is True
+    assert [tool.tool_name for tool in decision.tools_used] == [
+        "rag_search",
+        "suggest_reply",
+        "create_follow_up_task",
+        "escalate_to_manager",
+    ]
+
+
+def test_cancellation_plans_rag_reply_and_escalation() -> None:
+    decision = AgentOrchestratorService().decide(
+        _message("cancellation_request", "medium")
+    )
+
+    assert [tool.tool_name for tool in decision.tools_used] == [
+        "rag_search",
+        "suggest_reply",
+        "escalate_to_manager",
+    ]
+
+
+def test_max_tool_call_limit_trims_to_human_review_safe_tools(monkeypatch) -> None:
+    monkeypatch.setattr(planner_module, "AGENT_MAX_TOOL_CALLS", 2)
+
+    trimmed = AgentOrchestratorService._trim_plan_safely(
+        ["rag_search", "suggest_reply", "create_follow_up_task", "escalate_to_manager"]
+    )
+
+    assert trimmed == ["rag_search", "suggest_reply"]
+
+
+def test_tool_registry_contains_exact_agent_tools() -> None:
+    registry = create_default_tool_registry()
+
+    assert set(registry.list_tools()) == EXPECTED_AGENT_TOOL_NAMES
+
+
+def test_tool_registry_rejects_unknown_tool() -> None:
+    registry = create_default_tool_registry()
+
+    with pytest.raises(UnknownAgentToolError, match="unknown agent tool"):
+        registry.get_tool("send_client_message")
+
+
+@pytest.mark.parametrize(
+    ("intent", "risk_level", "expected_tools"),
+    [
+        (
+            "complaint",
+            "medium",
+            ["rag_search", "suggest_reply", "create_follow_up_task", "escalate_to_manager"],
+        ),
+        ("cancellation_request", "medium", ["rag_search", "suggest_reply", "escalate_to_manager"]),
+        ("payment_issue", "medium", ["rag_search", "suggest_reply", "create_follow_up_task"]),
+        (
+            "payment_issue",
+            "high",
+            ["rag_search", "suggest_reply", "create_follow_up_task", "escalate_to_manager"],
+        ),
+        ("urgent_change", "medium", ["rag_search", "suggest_reply", "create_follow_up_task"]),
+        (
+            "guest_count_change",
+            "high",
+            ["rag_search", "suggest_reply", "create_follow_up_task", "escalate_to_manager"],
+        ),
+        ("human_escalation", "medium", ["suggest_reply", "escalate_to_manager"]),
+    ],
+)
+def test_planner_returns_expected_tool_order(
+    intent: str,
+    risk_level: str,
+    expected_tools: list[str],
+) -> None:
+    planned = plan_tools(
+        intent,
+        is_high_risk=risk_level == "high",
+        message_body="I need help",
+    )
+
+    assert [item.name for item in planned] == expected_tools
 
 
 def test_cancellation_request_recommends_escalation() -> None:
@@ -152,7 +239,7 @@ def test_known_risk_is_high_confidence_no_human_review() -> None:
 def test_decision_object_has_no_created_record_references() -> None:
     decision = AgentOrchestratorService().decide(_message("complaint", "high"))
 
-    # Phase A creates nothing, so there is no id to expose.
+    # A pure decision creates nothing, so there is no id to expose.
     for forbidden in ("task_id", "escalation_id", "applied"):
         assert not hasattr(decision, forbidden)
 
@@ -191,7 +278,7 @@ def test_decide_without_session_performs_no_audit() -> None:
     assert decision.ran is True
 
 
-# --- Tenant safety / no endpoint yet ---------------------------------------
+# --- Tenant safety ----------------------------------------------------------
 
 
 def test_no_method_accepts_tenant_id_from_input() -> None:

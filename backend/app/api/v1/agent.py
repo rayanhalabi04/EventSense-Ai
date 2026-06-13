@@ -2,12 +2,11 @@
 
 Exposes the bounded agent through a single, safe endpoint.
 
-- ``apply=false`` (default): returns a deterministic recommendation only — no
-  task, no escalation, no suggested reply, nothing sent to the client.
-- ``apply=true``: runs the same decision and creates the recommended follow-up
-  task and/or escalation through the existing Task/Escalation services, then
-  returns the decision plus the created ids. Still sends nothing to the client
-  and never approves/sends a suggested reply.
+- ``apply=false`` (default): returns a deterministic tool trace and previews —
+  no task, escalation, or suggested reply is persisted.
+- ``apply=true``: runs the same tool plan and creates/reuses draft suggested
+  replies, follow-up tasks, and manager escalations as recommended. It still
+  sends nothing to the client and never approves/sends a suggested reply.
 
 Tenant identity comes only from the JWT context; ownership of the conversation
 and message is validated before anything runs.
@@ -20,7 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_async_session
 from app.core.tenant_context import TenantContext, require_role
 from app.models.user import UserRole
-from app.schemas.agent import AgentApplied, AgentRunRequest, AgentRunResponse
+from app.schemas.agent import AgentRunRequest, AgentRunResponse
 from app.services.agent_orchestrator_service import AgentOrchestratorService
 from app.services.conversation_service import ConversationService
 
@@ -35,23 +34,19 @@ async def run_agent(
     ctx: TenantContext = Depends(require_role(UserRole.staff, UserRole.manager)),
     session: AsyncSession = Depends(get_async_session),
 ) -> AgentRunResponse:
-    _, message = await ConversationService(session).get_tenant_inbound_message_or_error(
+    conversation, message = await ConversationService(session).get_tenant_inbound_message_or_error(
         conversation_id,
         payload.message_id,
         ctx,
     )
 
     orchestrator = AgentOrchestratorService(session)
-    decision = orchestrator.run(message=message, ctx=ctx)
-
-    applied: AgentApplied | None = None
-    if payload.apply:
-        applied = await orchestrator.apply_decision(
-            decision=decision,
-            conversation_id=conversation_id,
-            message=message,
-            ctx=ctx,
-        )
+    response = await orchestrator.run_tool_agent(
+        conversation=conversation,
+        message=message,
+        ctx=ctx,
+        apply=payload.apply,
+    )
 
     await session.commit()
-    return AgentRunResponse(**decision.model_dump(), applied=applied)
+    return response

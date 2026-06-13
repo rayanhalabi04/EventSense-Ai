@@ -1,10 +1,9 @@
-"""Deterministic evaluation for the dry-run agent orchestrator (Phase A/B).
+"""Deterministic evaluation for the bounded tool-using agent.
 
-The agent's decision is a pure function of a message's ``intent_label`` and
-``risk_level``. This runner replays a golden set of (intent, risk) cases through
-``AgentOrchestratorService.decide`` and asserts the recommendation fields match
-the expected values exactly. Because the rules are deterministic, the pass-rate
-threshold is 1.0 — any mismatch is a real behavior regression, not noise.
+This runner replays a golden set of (intent, risk) cases through
+``AgentOrchestratorService.decide`` and asserts recommendation fields and tool
+selection order match the expected values exactly. Because the rules are
+deterministic, the pass-rate threshold is 1.0.
 
 No database, no HTTP, no RAG/LLM, and no writes: this evaluates the decision
 rules only. Run from the repository root:
@@ -47,6 +46,7 @@ COMPARE_FIELDS = (
     "recommended_escalation",
     "human_review_required",
     "confidence",
+    "tools",
 )
 
 # Coverage we require the golden set to exercise.
@@ -78,7 +78,7 @@ def load_cases() -> list[dict[str, Any]]:
         expected = case["expected"]
         if not isinstance(expected, dict):
             raise SystemExit(f"case {case['id']} expected must be an object")
-        missing_expected = set(COMPARE_FIELDS) - set(expected)
+        missing_expected = set(COMPARE_FIELDS) - {"tools"} - set(expected)
         if missing_expected:
             raise SystemExit(
                 f"case {case['id']} expected missing fields: {sorted(missing_expected)}"
@@ -110,6 +110,7 @@ def actual_decision(case: dict[str, Any]) -> dict[str, Any]:
         "recommended_escalation": decision.recommended_escalation.should_escalate,
         "human_review_required": decision.human_review_required,
         "confidence": decision.confidence,
+        "tools": [tool.tool_name for tool in decision.tools_used],
     }
 
 
@@ -124,7 +125,12 @@ def evaluate() -> tuple[dict[str, Any], int]:
 
     for case in cases:
         intent = str(case["intent_label"])
-        expected = {field: case["expected"][field] for field in COMPARE_FIELDS}
+        expected = {
+            field: case["expected"][field]
+            for field in COMPARE_FIELDS
+            if field != "tools"
+        }
+        expected["tools"] = case.get("expected_tools", [])
         actual = actual_decision(case)
 
         mismatches = {

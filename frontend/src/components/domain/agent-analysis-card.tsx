@@ -2,8 +2,8 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { humanize } from "@/lib/format";
-import type { AgentApplied, AgentDecision } from "@/lib/types";
-import { Bot, CheckCircle2, MinusCircle, Wand2 } from "lucide-react";
+import type { AgentApplied, AgentDecision, AgentToolTrace } from "@/lib/types";
+import { Bot, CheckCircle2, FileText, MinusCircle, Wand2 } from "lucide-react";
 
 interface AgentAnalysisCardProps {
   decision: AgentDecision | undefined;
@@ -89,7 +89,15 @@ function AgentDecisionView({
 }) {
   const recommendsAction =
     decision.recommended_task.should_create || decision.recommended_escalation.should_escalate;
-  const hasApplied = Boolean(applied?.task_id || applied?.escalation_id);
+  const hasApplied = Boolean(
+    applied?.task_id || applied?.escalation_id || applied?.suggested_reply_id,
+  );
+  const suggestedReplyTool = decision.tools_used.find(
+    (tool) => tool.tool_name === "suggest_reply",
+  );
+  const sourceIds = Array.from(
+    new Set(decision.tools_used.flatMap((tool) => tool.source_ids ?? [])),
+  );
 
   return (
     <div className="space-y-3">
@@ -127,6 +135,37 @@ function AgentDecisionView({
         </p>
       ) : null}
 
+      <ToolTraceList tools={decision.tools_used} />
+
+      {sourceIds.length ? (
+        <div className="rounded-md border border-border bg-muted/30 px-3 py-2">
+          <p className="mb-2 flex items-center gap-2 text-sm font-medium text-foreground">
+            <FileText className="h-4 w-4 text-muted-foreground" /> RAG sources
+          </p>
+          <div className="flex flex-wrap gap-1.5">
+            {sourceIds.map((id) => (
+              <code
+                key={id}
+                className="rounded bg-background px-1.5 py-0.5 font-mono text-xs text-muted-foreground"
+              >
+                {id}
+              </code>
+            ))}
+          </div>
+        </div>
+      ) : null}
+
+      {suggestedReplyTool?.suggested_reply_preview ? (
+        <div className="rounded-md border border-border bg-background px-3 py-2">
+          <p className="mb-1 text-sm font-medium text-foreground">
+            {applied?.suggested_reply_id ? "Saved draft reply" : "Draft reply preview"}
+          </p>
+          <p className="whitespace-pre-wrap text-sm text-foreground/90">
+            {suggestedReplyTool.suggested_reply_preview}
+          </p>
+        </div>
+      ) : null}
+
       {recommendsAction ? (
         <div className="space-y-3 rounded-lg border border-border bg-muted/30 px-4 py-3">
           {hasApplied ? (
@@ -137,6 +176,9 @@ function AgentDecisionView({
               {applied?.task_id ? <AppliedRow label="Task" id={applied.task_id} /> : null}
               {applied?.escalation_id ? (
                 <AppliedRow label="Escalation" id={applied.escalation_id} />
+              ) : null}
+              {applied?.suggested_reply_id ? (
+                <AppliedRow label="Draft reply" id={applied.suggested_reply_id} />
               ) : null}
             </div>
           ) : (
@@ -159,9 +201,36 @@ function AgentDecisionView({
 
       <p className="text-xs text-muted-foreground">
         {recommendsAction
-          ? "Applying creates the recommended task and/or escalation only. No client message is sent and no reply is approved or sent."
+          ? "Applying creates draft/review records only. No client message is sent and no reply is approved or sent."
           : "Recommendation only — no task, escalation, or client message is created from this analysis."}
       </p>
+    </div>
+  );
+}
+
+function ToolTraceList({ tools }: { tools: AgentToolTrace[] }) {
+  if (!tools.length) {
+    return null;
+  }
+  return (
+    <div className="space-y-2">
+      {tools.map((tool) => (
+        <div
+          key={`${tool.tool_name}-${tool.status}-${tool.created_id ?? tool.output_summary ?? ""}`}
+          className="flex items-start justify-between gap-3 rounded-md border border-border bg-muted/20 px-3 py-2"
+        >
+          <div className="min-w-0">
+            <p className="text-sm font-medium text-foreground">{humanize(tool.tool_name)}</p>
+            <p className="text-sm text-muted-foreground">{tool.summary}</p>
+            {tool.output_summary ? (
+              <p className="mt-1 text-xs text-muted-foreground">{tool.output_summary}</p>
+            ) : null}
+          </div>
+          <Badge variant={tool.status === "success" ? "success" : "outline"}>
+            {humanize(tool.status)}
+          </Badge>
+        </div>
+      ))}
     </div>
   );
 }

@@ -1,13 +1,12 @@
-"""Schemas for the focused agentic workflow (Phase A — dry-run only).
+"""Schemas for the focused bounded tool-using agent.
 
-The agent never sends client messages, never creates tasks or escalations, and
-never accepts a ``tenant_id`` from caller input. An ``AgentDecision`` is a
-read-only *recommendation* object; acting on it is a deliberate, separate step
-introduced in a later phase.
+The agent never sends client messages and never accepts a ``tenant_id`` from
+caller input. ``apply=false`` returns tool recommendations/previews only;
+``apply=true`` persists allowed draft/task/escalation outputs.
 """
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 CONFIDENCE_HIGH = "high"
@@ -41,6 +40,19 @@ class RecommendedEscalation(BaseModel):
     reason: str | None = None
 
 
+class AgentToolTrace(BaseModel):
+    tool_name: str
+    status: str
+    mode: str
+    summary: str
+    input_summary: str | None = None
+    output_summary: str | None = None
+    source_ids: list[str] = Field(default_factory=list)
+    suggested_reply_preview: str | None = None
+    created_id: UUID | None = None
+    recommended: dict[str, object] | None = None
+
+
 class AgentDecision(BaseModel):
     """Bounded, deterministic recommendation for a single message.
 
@@ -58,6 +70,7 @@ class AgentDecision(BaseModel):
     human_review_required: bool
     confidence: str
     audit_run_id: UUID
+    tools_used: list[AgentToolTrace] = Field(default_factory=list)
 
 
 class AgentApplied(BaseModel):
@@ -66,10 +79,14 @@ class AgentApplied(BaseModel):
 
     task_id: UUID | None = None
     escalation_id: UUID | None = None
+    suggested_reply_id: UUID | None = None
 
 
 class AgentRunResponse(AgentDecision):
-    """The decision plus, when ``apply=true``, the created record ids. For
-    ``apply=false`` ``applied`` is null and no records exist."""
+    """The decision plus visible tool trace and optional applied record ids."""
 
+    message_id: UUID | None = None
+    conversation_id: UUID | None = None
+    intent_label: str | None = None
+    tools_used: list[AgentToolTrace] = Field(default_factory=list)
     applied: AgentApplied | None = None

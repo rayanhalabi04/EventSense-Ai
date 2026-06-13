@@ -206,6 +206,12 @@ async def test_dry_run_creates_no_task_or_escalation_but_audits(
     ).scalars().all()
     assert tasks == []
     assert escalations == []
+    replies = (
+        await db_session.execute(
+            select(SuggestedReply).where(SuggestedReply.conversation_id == conv_id)
+        )
+    ).scalars().all()
+    assert replies == []
 
     audit_events = (
         await db_session.execute(
@@ -213,6 +219,35 @@ async def test_dry_run_creates_no_task_or_escalation_but_audits(
         )
     ).scalars().all()
     assert len(audit_events) == 1
+
+
+async def test_dry_run_tool_trace_marks_no_source_as_unsupported(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    demo_tenants: dict[str, Tenant],
+) -> None:
+    token = await login(client)
+    conversation = await create_conversation(client, token)
+    message = await seed_inbound_message(
+        db_session,
+        tenant=demo_tenants["elegant-weddings"],
+        conversation_id=conversation["id"],
+        body="The moonlight unicorn package clause is wrong.",
+        intent_label="complaint",
+        risk_level="medium",
+    )
+
+    response = await run_agent(client, token, conversation["id"], str(message.id))
+
+    assert response.status_code == 200
+    body = response.json()
+    rag_tool = body["tools_used"][0]
+    reply_tool = body["tools_used"][1]
+    assert rag_tool["tool_name"] == "rag_search"
+    assert rag_tool["status"] == "unsupported"
+    assert reply_tool["tool_name"] == "suggest_reply"
+    assert reply_tool["status"] == "unsupported"
+    assert body["human_review_required"] is True
 
 
 async def _tasks_for(db_session: AsyncSession, conversation_id: str) -> list[Task]:
@@ -265,7 +300,7 @@ async def test_apply_true_payment_issue_creates_task_only(
     assert str(tasks[0].id) == body["applied"]["task_id"]
 
 
-async def test_apply_true_complaint_creates_escalation_only(
+async def test_apply_true_complaint_creates_task_and_escalation(
     client: AsyncClient,
     db_session: AsyncSession,
     demo_tenants: dict[str, Tenant],
@@ -286,14 +321,21 @@ async def test_apply_true_complaint_creates_escalation_only(
 
     assert response.status_code == 200
     body = response.json()
-    assert body["recommended_task"]["should_create"] is False
+    assert body["recommended_task"]["should_create"] is True
     assert body["recommended_escalation"]["should_escalate"] is True
-    assert body["applied"]["task_id"] is None
+    assert body["applied"]["task_id"] is not None
     assert body["applied"]["escalation_id"] is not None
+    assert body["applied"]["suggested_reply_id"] is not None
+    assert [tool["tool_name"] for tool in body["tools_used"]] == [
+        "rag_search",
+        "suggest_reply",
+        "create_follow_up_task",
+        "escalate_to_manager",
+    ]
 
     tasks = await _tasks_for(db_session, conversation["id"])
     escalations = await _escalations_for(db_session, conversation["id"])
-    assert len(tasks) == 0
+    assert len(tasks) == 1
     assert len(escalations) == 1
     assert escalations[0].tenant_id == tenant.id
     # The escalation snapshots the message intent/risk via the existing service.
@@ -301,7 +343,7 @@ async def test_apply_true_complaint_creates_escalation_only(
     assert str(escalations[0].id) == body["applied"]["escalation_id"]
 
 
-async def test_apply_true_urgent_change_creates_task_and_escalation(
+async def test_apply_true_high_risk_urgent_change_creates_task_and_escalation(
     client: AsyncClient,
     db_session: AsyncSession,
     demo_tenants: dict[str, Tenant],
@@ -315,7 +357,7 @@ async def test_apply_true_urgent_change_creates_task_and_escalation(
         conversation_id=conversation["id"],
         body="We must move the ceremony to tomorrow morning, urgent.",
         intent_label="urgent_change",
-        risk_level="medium",
+        risk_level="high",
     )
 
     response = await run_agent(client, token, conversation["id"], str(message.id), apply=True)
@@ -344,7 +386,7 @@ async def test_apply_true_urgent_change_creates_task_and_escalation(
     assert len(task_audit) == 1
     assert len(esc_audit) == 1
 
-    # AC-11: no outbound client message and no suggested reply were created.
+    # AC-11: no outbound client message is created; the reply remains a draft.
     outbound = (
         await db_session.execute(
             select(Message).where(
@@ -361,7 +403,8 @@ async def test_apply_true_urgent_change_creates_task_and_escalation(
         )
     ).scalars().all()
     assert outbound == []
-    assert replies == []
+    assert len(replies) == 1
+    assert replies[0].status.value == "draft"
 
 
 async def test_apply_true_non_trigger_creates_nothing(
@@ -459,7 +502,7 @@ async def test_apply_true_is_idempotent_for_task_and_escalation(
         conversation_id=conversation["id"],
         body="We must move the ceremony to tomorrow morning, urgent.",
         intent_label="urgent_change",
-        risk_level="medium",
+        risk_level="high",
     )
 
     first = await run_agent(client, token, conversation["id"], str(message.id), apply=True)
@@ -473,14 +516,24 @@ async def test_apply_true_is_idempotent_for_task_and_escalation(
     # Same ids returned on the repeat call...
     assert second_applied["task_id"] == first_applied["task_id"]
     assert second_applied["escalation_id"] == first_applied["escalation_id"]
+    assert second_applied["suggested_reply_id"] == first_applied["suggested_reply_id"]
     assert first_applied["task_id"] is not None
     assert first_applied["escalation_id"] is not None
+    assert first_applied["suggested_reply_id"] is not None
 
     # ...and no duplicate rows were created.
     tasks = await _tasks_for(db_session, conversation["id"])
     escalations = await _escalations_for(db_session, conversation["id"])
+    replies = (
+        await db_session.execute(
+            select(SuggestedReply).where(
+                SuggestedReply.conversation_id == UUID(conversation["id"])
+            )
+        )
+    ).scalars().all()
     assert len(tasks) == 1
     assert len(escalations) == 1
+    assert len(replies) == 1
     # Provenance is stamped on the agent records.
     assert tasks[0].source_type == "agent"
     assert tasks[0].source_message_id == message.id
@@ -514,7 +567,7 @@ async def test_apply_true_idempotent_task_only(
     assert len(escalations) == 0
 
 
-async def test_apply_true_idempotent_escalation_only(
+async def test_apply_true_idempotent_complaint_task_and_escalation(
     client: AsyncClient,
     db_session: AsyncSession,
     demo_tenants: dict[str, Tenant],
@@ -536,7 +589,7 @@ async def test_apply_true_idempotent_escalation_only(
     assert second.json()["applied"]["escalation_id"] == first.json()["applied"]["escalation_id"]
     tasks = await _tasks_for(db_session, conversation["id"])
     escalations = await _escalations_for(db_session, conversation["id"])
-    assert len(tasks) == 0
+    assert len(tasks) == 1
     assert len(escalations) == 1
 
 

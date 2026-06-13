@@ -4,11 +4,12 @@
     "text": "I am really unhappy with how our tasting was handled. This is unacceptable.",
     "intent_label": "complaint",
     "risk_level": "medium",
-    "scenario": "client complaint, medium risk -> escalate",
+    "scenario": "client complaint, medium risk -> task and escalation",
+    "expected_tools": ["rag_search", "suggest_reply", "create_follow_up_task", "escalate_to_manager"],
     "expected": {
       "ran": true,
       "skipped_reason": null,
-      "recommended_task": false,
+      "recommended_task": true,
       "recommended_escalation": true,
       "human_review_required": false,
       "confidence": "high"
@@ -19,11 +20,12 @@
     "text": "Your team ruined our rehearsal dinner and nobody is answering. Furious.",
     "intent_label": "complaint",
     "risk_level": "high",
-    "scenario": "complaint at high risk -> escalate (high risk reinforces)",
+    "scenario": "complaint at high risk -> task and escalation",
+    "expected_tools": ["rag_search", "suggest_reply", "create_follow_up_task", "escalate_to_manager"],
     "expected": {
       "ran": true,
       "skipped_reason": null,
-      "recommended_task": false,
+      "recommended_task": true,
       "recommended_escalation": true,
       "human_review_required": false,
       "confidence": "high"
@@ -34,7 +36,8 @@
     "text": "We need to cancel our wedding package and understand the refund terms.",
     "intent_label": "cancellation_request",
     "risk_level": "medium",
-    "scenario": "cancellation request -> escalate",
+    "scenario": "cancellation request -> draft reply and escalate",
+    "expected_tools": ["rag_search", "suggest_reply", "escalate_to_manager"],
     "expected": {
       "ran": true,
       "skipped_reason": null,
@@ -49,7 +52,8 @@
     "text": "I was charged twice for the deposit and the payment still shows unconfirmed.",
     "intent_label": "payment_issue",
     "risk_level": "medium",
-    "scenario": "payment issue, medium risk -> task only",
+    "scenario": "payment issue, medium risk -> draft reply and task only",
+    "expected_tools": ["rag_search", "suggest_reply", "create_follow_up_task"],
     "expected": {
       "ran": true,
       "skipped_reason": null,
@@ -64,7 +68,8 @@
     "text": "My card was charged $8000 by mistake and no one will confirm a refund. Urgent.",
     "intent_label": "payment_issue",
     "risk_level": "high",
-    "scenario": "payment issue at high risk -> task AND escalation (high risk forces escalate)",
+    "scenario": "payment issue at high risk -> task and escalation",
+    "expected_tools": ["rag_search", "suggest_reply", "create_follow_up_task", "escalate_to_manager"],
     "expected": {
       "ran": true,
       "skipped_reason": null,
@@ -79,12 +84,13 @@
     "text": "We need to move the ceremony time to tomorrow morning, last minute.",
     "intent_label": "urgent_change",
     "risk_level": "medium",
-    "scenario": "urgent change -> task AND escalation",
+    "scenario": "urgent change, medium risk -> draft reply and task only",
+    "expected_tools": ["rag_search", "suggest_reply", "create_follow_up_task"],
     "expected": {
       "ran": true,
       "skipped_reason": null,
       "recommended_task": true,
-      "recommended_escalation": true,
+      "recommended_escalation": false,
       "human_review_required": false,
       "confidence": "high"
     }
@@ -94,7 +100,8 @@
     "text": "Our guest count went from 120 to 180, can the venue still handle it?",
     "intent_label": "guest_count_change",
     "risk_level": "medium",
-    "scenario": "guest count change -> task only",
+    "scenario": "guest count change -> draft reply and task only",
+    "expected_tools": ["rag_search", "suggest_reply", "create_follow_up_task"],
     "expected": {
       "ran": true,
       "skipped_reason": null,
@@ -109,7 +116,8 @@
     "text": "I want to speak to a manager about this immediately.",
     "intent_label": "human_escalation",
     "risk_level": "medium",
-    "scenario": "explicit human escalation -> escalate",
+    "scenario": "explicit human escalation -> suggest reply and escalate",
+    "expected_tools": ["suggest_reply", "escalate_to_manager"],
     "expected": {
       "ran": true,
       "skipped_reason": null,
@@ -124,11 +132,12 @@
     "text": "Not happy with the service but the risk classification is unavailable.",
     "intent_label": "complaint",
     "risk_level": null,
-    "scenario": "trigger intent with missing/unclear risk -> human review + low confidence",
+    "scenario": "trigger intent with missing/unclear risk -> human review + task/escalation",
+    "expected_tools": ["rag_search", "suggest_reply", "create_follow_up_task", "escalate_to_manager"],
     "expected": {
       "ran": true,
       "skipped_reason": null,
-      "recommended_task": false,
+      "recommended_task": true,
       "recommended_escalation": true,
       "human_review_required": true,
       "confidence": "low"

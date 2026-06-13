@@ -57,7 +57,7 @@ guardrails + audit), suggested-reply generation, and the focused agent's apply
 flow. They are **safe to rerun** — documents are skipped by title and whole
 conversations are skipped when they already exist, so a second run is a no-op.
 No client message is ever sent: suggested replies stay `draft` and the agent
-only recommends/creates tasks and escalations.
+only drafts replies and recommends/creates tasks and escalations.
 
 > **Tenant documents are sample files.** Each document's content is read from
 > `data/tenant-documents/<tenant-slug>/` (e.g. `pricing-packages.txt`,
@@ -208,6 +208,48 @@ model env vars are configured. If the provider is unknown, missing config, times
 out, errors, returns an empty response, or produces unsafe output, EventSense AI
 keeps the existing template fallback and records `llm_fallback_reason` in the
 generated suggested-reply audit details.
+
+### Focused Tool-Using Agent
+
+The EventSense agent is a bounded tool-using workflow, not a free-running
+autonomous bot. It only runs for risky or complex intents:
+`complaint`, `cancellation_request`, `payment_issue`, `urgent_change`,
+`guest_count_change`, and `human_escalation`. Other intents are skipped with
+`intent_not_in_trigger_set`.
+
+The agent has four explicit tools:
+
+- `rag_search` retrieves authenticated-tenant document sources.
+- `suggest_reply` prepares a staff-review draft, grounded in RAG when sources
+  exist and marked unsupported when they do not.
+- `create_follow_up_task` recommends or creates an idempotent staff task.
+- `escalate_to_manager` recommends or creates an idempotent manager escalation.
+
+The implementation is organized as a small production-style agent package:
+
+```text
+backend/app/services/agent/
+  orchestrator.py       # entry point, bounded execution, high-level audit
+  planner.py            # deterministic trigger/tool planning rules
+  tool_registry.py      # registered tools and unknown-tool protection
+  tool_types.py         # shared tool context/result/trace types
+  tools/                # one module per concrete tool
+```
+
+`backend/app/services/agent_orchestrator_service.py` remains as a compatibility
+wrapper for older imports.
+
+Run it with:
+
+```http
+POST /api/v1/conversations/{conversation_id}/agent/run
+```
+
+`apply=false` returns a tool trace and previews only: no task, escalation, or
+suggested reply is written. `apply=true` runs the same bounded plan and persists
+allowed outputs as draft/review records. Replies are never auto-sent or
+approved; human staff stay in control. Tool planning/execution, skips,
+completion, human-review fallback, and agent-created records are audit logged.
 
 Short-term conversation memory is optional and Redis-backed. By default
 `MEMORY_ENABLED=false`, so the backend does not use Redis in request flows. When
