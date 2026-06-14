@@ -8,6 +8,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.sql import func
 from sqlalchemy.types import UserDefinedType, Uuid
 
+from app.core.config import settings
 from app.core.database import Base, TimestampMixin
 
 
@@ -33,7 +34,9 @@ class EmbeddingVector(UserDefinedType):
     cache_ok = True
 
     def get_col_spec(self, **kw) -> str:
-        return "vector(64)"
+        # Dimension is driven by EMBEDDING_DIM so the column always matches the
+        # active embedding model (semantic or deterministic fallback).
+        return f"vector({settings.embedding_dim})"
 
     def bind_processor(self, dialect):
         def process(value: list[float] | None) -> str | None:

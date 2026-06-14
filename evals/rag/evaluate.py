@@ -2,6 +2,7 @@ import json
 import math
 from pathlib import Path
 
+from app.core.config import settings
 from app.services.embedding_service import embedding_service, tokenize_for_retrieval
 
 
@@ -97,6 +98,10 @@ def cosine(left: list[float], right: list[float]) -> float:
 
 
 def retrieve(question: str, tenant_slug: str, top_k: int = 3) -> list[dict[str, object]]:
+    is_semantic = embedding_service.is_semantic
+    # Mirror rag_service: semantic vectors use a stricter cosine floor and no
+    # lexical guard; the deterministic fallback uses a low floor + lexical guard.
+    min_score = settings.rag_semantic_min_score if is_semantic else 0.08
     query_embedding = embedding_service.embed_text(question)
     query_tokens = tokenize_for_retrieval(question)
     ranked = sorted(
@@ -107,12 +112,12 @@ def retrieve(question: str, tenant_slug: str, top_k: int = 3) -> list[dict[str, 
             }
             for doc in CORPUS
             if doc["tenant_slug"] == tenant_slug
-            and query_tokens.intersection(tokenize_for_retrieval(doc["text"]))
+            and (is_semantic or query_tokens.intersection(tokenize_for_retrieval(doc["text"])))
         ),
         key=lambda item: item["score"],
         reverse=True,
     )
-    return [item for item in ranked[:top_k] if item["score"] >= 0.08]
+    return [item for item in ranked[:top_k] if item["score"] >= min_score]
 
 
 def main() -> None:
@@ -143,6 +148,9 @@ def main() -> None:
     print(
         json.dumps(
             {
+                "embedding_backend": embedding_service.backend_name,
+                "embedding_is_semantic": embedding_service.is_semantic,
+                "embedding_dim": embedding_service.dimensions,
                 "hit_at_3": hits / len(answerable),
                 "mrr": reciprocal_rank_total / len(answerable),
                 "refusal_accuracy": refusal_correct

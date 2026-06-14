@@ -93,6 +93,9 @@ async def test_document_create_creates_chunks(
     assert str(chunks[0].tenant_id) == document["tenant_id"]
     assert chunks[0].parent_text
     assert chunks[0].embedding
+    # Stored vectors must match the configured embedding dimension so they are
+    # comparable against query embeddings in pgvector.
+    assert all(len(chunk.embedding) == embedding_service.dimensions for chunk in chunks)
 
 
 async def test_document_update_rebuilds_chunks(
@@ -267,6 +270,95 @@ async def test_no_source_refusal_works(client: AsyncClient):
     assert result["answer_supported"] is False
     assert result["sources"] == []
     assert "could not find supporting information" in result["refusal_reason"]
+
+
+def _semantic_mode(monkeypatch, scores: list[float]):
+    """Put rag_service into SEMANTIC mode with a stubbed retrieval ranking.
+
+    Real semantic embeddings have a high similarity floor, so the gate must rely
+    on settings.rag_semantic_min_score rather than the fallback's low floor +
+    lexical guard. This stubs the provider + repository so the threshold is
+    exercised against controlled cosine scores.
+    """
+    from types import SimpleNamespace
+    from uuid import uuid4
+
+    from app.models.document import DocumentType
+    from app.repositories.document_chunk_repository import ScoredDocumentChunk
+    from app.services import rag_service
+
+    stub_provider = SimpleNamespace(
+        is_semantic=True,
+        dimensions=8,
+        name="gemini-semantic",
+        embed_batch=lambda texts: [[0.1] * 8 for _ in texts],
+    )
+    monkeypatch.setattr(rag_service.embedding_service, "_provider", stub_provider)
+
+    async def fake_slug(session, tenant_id):
+        return "elegant-weddings"
+
+    monkeypatch.setattr(rag_service, "_tenant_slug", fake_slug)
+
+    def make_chunk(score: float) -> ScoredDocumentChunk:
+        chunk = SimpleNamespace(
+            document_id=uuid4(),
+            document_title="Deposit Policy",
+            document_type=DocumentType.deposit_policy,
+            parent_text="Deposits follow the written policy.",
+            # No token overlap with the query: only semantics should match.
+            chunk_text="zzz qqq vvv",
+            chunk_index=0,
+            chunk_metadata={},
+        )
+        return ScoredDocumentChunk(chunk=chunk, score=score, retrieval_backend="pgvector_sql")
+
+    async def fake_search(self, tenant_id, *, query_embedding, top_k, document_types=None):
+        return [make_chunk(score) for score in scores]
+
+    monkeypatch.setattr(
+        rag_service.DocumentChunkRepository, "search_similar_chunks", fake_search
+    )
+    return rag_service
+
+
+async def test_semantic_mode_accepts_strong_match_above_threshold(monkeypatch):
+    from uuid import uuid4
+
+    # 0.92 is clearly relevant, 0.55 is out-of-domain noise (default floor 0.6).
+    rag_service = _semantic_mode(monkeypatch, scores=[0.92, 0.55])
+
+    result = await rag_service.retrieve(
+        None,
+        query="Is my deposit refundable?",
+        tenant_id=uuid4(),
+        enforce_guardrails=False,
+        audit=False,
+    )
+
+    assert result.answer_supported is True
+    assert len(result.sources) == 1
+    assert result.sources[0].score == 0.92
+
+
+async def test_semantic_mode_refuses_when_only_weak_matches(monkeypatch):
+    from uuid import uuid4
+
+    # All below the semantic floor: an out-of-domain question (e.g. the smoke
+    # "honeymoon flight to Paris") that only weakly matches tenant docs.
+    rag_service = _semantic_mode(monkeypatch, scores=[0.55, 0.50, 0.48])
+
+    result = await rag_service.retrieve(
+        None,
+        query="Can you book our honeymoon flight to Paris?",
+        tenant_id=uuid4(),
+        enforce_guardrails=False,
+        audit=False,
+    )
+
+    assert result.answer_supported is False
+    assert result.sources == []
+    assert result.refusal_reason
 
 
 async def test_rag_endpoint_requires_auth(client: AsyncClient):

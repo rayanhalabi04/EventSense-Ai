@@ -168,12 +168,62 @@ What each proves:
   `eval-artifacts/agent_eval.json`).
 - **eval-guardrails** — input rails block unsafe/prompt-injection/cross-tenant
   prompts, allow safe ones, and redact PII (gates via exit code; prints a report).
-- **eval-rag** — retrieval hit@3 / MRR / refusal / tenant-isolation metrics.
-  **Informational only:** it prints metrics but does not yet gate on a threshold,
-  so it is excluded from `make eval-ai`.
+- **eval-rag** — retrieval hit@3 / MRR / refusal / tenant-isolation metrics. The
+  JSON output also reports `embedding_backend`, `embedding_is_semantic`, and
+  `embedding_dim` so you can see whether it ran on semantic or deterministic
+  fallback vectors. **Informational only:** it prints metrics but does not yet
+  gate on a threshold, so it is excluded from `make eval-ai`.
 
 `make eval-ai` exits non-zero if any gated eval fails, making it suitable for a
 future CI check.
+
+### RAG and Embeddings
+
+Tenant documents are chunked, embedded, and stored in PostgreSQL with **pgvector**.
+Retrieval is cosine similarity in pgvector, always filtered by `tenant_id`, and
+returns the source chunks it used; queries with no sufficiently similar chunk are
+refused rather than answered.
+
+Two embedding backends are supported, selected by `EMBEDDING_PROVIDER`:
+
+- **Semantic embeddings (recommended)** — set `EMBEDDING_PROVIDER=gemini` (reuses
+  `GEMINI_API_KEY`) or `EMBEDDING_PROVIDER=openai` (reuses `OPENAI_API_KEY`). This
+  gives true semantic retrieval: relevant chunks are found by meaning, not just
+  shared keywords.
+- **Deterministic fallback (default)** — `EMBEDDING_PROVIDER=fallback` produces
+  local, offline, **non-semantic** keyword/hash vectors. It needs no API key and
+  keeps the demo running, but it behaves like keyword matching and is never
+  presented as semantic. When a semantic provider is selected but has no key, the
+  app safely degrades to this fallback (unless `EMBEDDING_FALLBACK_ENABLED=false`,
+  which makes startup fail fast instead).
+
+Relevant environment variables (see `.env.example`):
+
+```bash
+EMBEDDING_PROVIDER=gemini        # fallback | gemini | openai
+EMBEDDING_MODEL=                 # empty = provider default (gemini: text-embedding-004)
+EMBEDDING_DIM=768                # pgvector column dimension; must match the model
+EMBEDDING_API_KEY=               # empty = reuse GEMINI_API_KEY / OPENAI_API_KEY
+EMBEDDING_FALLBACK_ENABLED=true  # false = fail fast when no key is configured
+```
+
+**Switching backends / dimensions.** The pgvector column dimension is fixed by
+`EMBEDDING_DIM`. After changing the provider, model, or dimension you must run the
+migrations and re-embed all stored chunks (old vectors can't be compared against
+new query vectors):
+
+```bash
+docker compose run --rm migrate          # applies migration 014 (sets EMBEDDING_DIM)
+make reembed                             # re-embeds every document chunk with the active backend
+# or locally, from ./backend:
+#   PYTHONPATH=. python -m app.reembed_chunks
+```
+
+Run the retrieval eval to confirm which backend is active:
+
+```bash
+make eval-rag   # prints embedding_backend / embedding_is_semantic / embedding_dim + metrics
+```
 
 ### AI Suggested Replies
 

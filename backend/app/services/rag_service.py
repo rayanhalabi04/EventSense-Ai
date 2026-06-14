@@ -3,6 +3,7 @@ from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.models.document import DocumentType
 from app.repositories.document_chunk_repository import DocumentChunkRepository
 from app.repositories.tenant_repository import TenantRepository
@@ -12,7 +13,11 @@ from app.services.audit_log_service import (
     AUDIT_EVENT_RAG_RETRIEVAL_RETURNED_SOURCES,
     AuditLogService,
 )
-from app.services.embedding_service import embedding_service, tokenize_for_retrieval
+from app.services.embedding_service import (
+    EmbeddingError,
+    embedding_service,
+    tokenize_for_retrieval,
+)
 from app.services.guardrail_service import (
     SAFE_REFUSAL,
     audit_guardrail_event,
@@ -22,6 +27,14 @@ from app.services.guardrail_service import (
 
 
 NO_SOURCE_MESSAGE = "I could not find supporting information in the uploaded tenant documents."
+EMBEDDING_UNAVAILABLE_MESSAGE = (
+    "The semantic embedding provider is unavailable, so I cannot search the tenant documents right now."
+)
+# Cosine-similarity floor for accepting a retrieved chunk. The deterministic
+# fallback produces low non-negative cosines, so it uses a low floor *plus* a
+# lexical overlap guard. Real semantic vectors spread scores higher and need no
+# lexical guard, so they use a stricter floor (settings.rag_semantic_min_score)
+# tuned to sit above the model's out-of-domain noise band.
 MIN_RELEVANCE_SCORE = 0.08
 
 
@@ -121,8 +134,34 @@ async def retrieve(
             },
         )
 
-    query_embedding = embedding_service.embed_text(safe_query)
+    is_semantic = embedding_service.is_semantic
+    try:
+        query_embedding = embedding_service.embed_text(safe_query)
+    except EmbeddingError:
+        # Semantic provider went down mid-request. Refuse safely instead of
+        # crashing or mixing it with fallback vectors stored on the chunks.
+        if audit:
+            AuditLogService.record(
+                session,
+                tenant_id=tenant_id,
+                actor_user_id=actor_user_id,
+                event_type=AUDIT_EVENT_RAG_NO_SOURCE_REFUSAL,
+                resource_type="rag_query",
+                details={"query": safe_query, "reason": EMBEDDING_UNAVAILABLE_MESSAGE},
+            )
+        return RagResult(
+            query=safe_query,
+            answer_supported=False,
+            sources=[],
+            refusal_reason=EMBEDDING_UNAVAILABLE_MESSAGE,
+            document_type_filter=[item.value for item in routed_types] if routed_types else None,
+        )
+
     query_tokens = tokenize_for_retrieval(safe_query)
+    # With true semantic embeddings, relevant chunks may share no exact tokens
+    # with the query, so the lexical guard is dropped and a stricter cosine
+    # floor is used. The deterministic fallback keeps both, as before.
+    min_score = settings.rag_semantic_min_score if is_semantic else MIN_RELEVANCE_SCORE
     candidate_limit = min(max(top_k * 5, 20), 100)
     ranked = await DocumentChunkRepository(session).search_similar_chunks(
         tenant_id,
@@ -141,8 +180,11 @@ async def retrieve(
             metadata=scored.chunk.chunk_metadata,
         )
         for scored in ranked
-        if scored.score >= MIN_RELEVANCE_SCORE
-        and query_tokens.intersection(tokenize_for_retrieval(scored.chunk.chunk_text))
+        if scored.score >= min_score
+        and (
+            is_semantic
+            or query_tokens.intersection(tokenize_for_retrieval(scored.chunk.chunk_text))
+        )
     ][:top_k]
 
     if not sources:
