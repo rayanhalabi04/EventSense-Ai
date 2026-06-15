@@ -375,6 +375,7 @@ async def test_llm_enabled_success_creates_llm_suggestion(
 
 async def test_suggested_reply_loads_recent_memory_for_llm_prompt(
     client: AsyncClient,
+    db_session: AsyncSession,
     monkeypatch: pytest.MonkeyPatch,
 ):
     fake = FakeLLMClient(
@@ -415,6 +416,8 @@ async def test_suggested_reply_loads_recent_memory_for_llm_prompt(
     assert fake.requests[0].conversation_memory[0]["body"] == (
         "Earlier I asked whether the garden venue is available."
     )
+    event = await latest_generated_event(db_session, reply["id"])
+    assert event.details["memory_message_count"] == 1
 
 
 async def test_llm_disabled_uses_template_fallback(

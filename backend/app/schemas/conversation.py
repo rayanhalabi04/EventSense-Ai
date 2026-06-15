@@ -28,6 +28,8 @@ class ConversationRead(BaseModel):
     tenant_id: UUID
     client_name: str
     client_contact: str | None
+    source: str | None = None
+    external_conversation_id: str | None = None
     status: ConversationStatus
     created_at: datetime
     updated_at: datetime
@@ -43,6 +45,7 @@ class ConversationDetailMessage(BaseModel):
     status: MessageStatus
     body: str
     source: str | None
+    external_message_id: str | None = None
     intent_label: str | None = None
     intent_confidence: float | None = None
     classified_at: datetime | None = None

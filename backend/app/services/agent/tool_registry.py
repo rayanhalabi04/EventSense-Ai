@@ -17,12 +17,39 @@ from app.services.agent.tools import (
 )
 
 
+EXPECTED_AGENT_TOOL_NAMES = frozenset(
+    {
+        TOOL_RAG_SEARCH,
+        TOOL_SUGGEST_REPLY,
+        TOOL_CREATE_FOLLOW_UP_TASK,
+        TOOL_ESCALATE_TO_MANAGER,
+    }
+)
+
+
 class UnknownAgentToolError(ValueError):
+    pass
+
+
+class UnapprovedAgentToolError(ValueError):
     pass
 
 
 class AgentToolRegistry:
     def __init__(self, tools: list[BaseAgentTool]) -> None:
+        tool_names = [tool.name for tool in tools]
+        unknown_tools = sorted(set(tool_names) - EXPECTED_AGENT_TOOL_NAMES)
+        if unknown_tools:
+            raise UnapprovedAgentToolError(
+                f"unapproved agent tools registered: {unknown_tools}"
+            )
+        duplicate_tools = sorted(
+            tool_name for tool_name in set(tool_names) if tool_names.count(tool_name) > 1
+        )
+        if duplicate_tools:
+            raise UnapprovedAgentToolError(
+                f"duplicate agent tools registered: {duplicate_tools}"
+            )
         self._tools = {tool.name: tool for tool in tools}
 
     def get_tool(self, name: AgentToolName) -> BaseAgentTool:
@@ -44,13 +71,3 @@ def create_default_tool_registry() -> AgentToolRegistry:
             EscalateToManagerTool(),
         ]
     )
-
-
-EXPECTED_AGENT_TOOL_NAMES = frozenset(
-    {
-        TOOL_RAG_SEARCH,
-        TOOL_SUGGEST_REPLY,
-        TOOL_CREATE_FOLLOW_UP_TASK,
-        TOOL_ESCALATE_TO_MANAGER,
-    }
-)

@@ -19,6 +19,12 @@ class Conversation(TimestampMixin, Base):
     __table_args__ = (
         Index("ix_conversations_tenant_id", "tenant_id"),
         Index("ix_conversations_tenant_id_status", "tenant_id", "status"),
+        Index(
+            "ix_conversations_tenant_source_external_id",
+            "tenant_id",
+            "source",
+            "external_conversation_id",
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
@@ -27,6 +33,8 @@ class Conversation(TimestampMixin, Base):
     )
     client_name: Mapped[str] = mapped_column(String(255), nullable=False)
     client_contact: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    source: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    external_conversation_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     status: Mapped[ConversationStatus] = mapped_column(
         Enum(ConversationStatus), nullable=False, default=ConversationStatus.open
     )

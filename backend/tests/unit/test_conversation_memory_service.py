@@ -9,7 +9,9 @@ from app.services.conversation_memory_service import (
     ConversationMemoryMessage,
     ConversationMemoryService,
     _redact_sensitive_text,
+    get_memory_status,
 )
+from app.models.message import Message, MessageDirection
 
 
 pytestmark = pytest.mark.asyncio
@@ -19,6 +21,9 @@ class FakeRedis:
     def __init__(self) -> None:
         self.store: dict[str, list[str]] = {}
         self.ttls: dict[str, int] = {}
+
+    async def ping(self) -> bool:
+        return True
 
     async def lpush(self, key: str, *values: str) -> None:
         self.store.setdefault(key, [])
@@ -35,6 +40,9 @@ class FakeRedis:
 
 
 class FailingRedis:
+    async def ping(self) -> None:
+        raise ConnectionError("redis down")
+
     async def lpush(self, key: str, *values: str) -> None:
         raise ConnectionError("redis down")
 
@@ -105,6 +113,38 @@ async def test_memory_applies_ttl_and_max_messages() -> None:
     assert [message.body for message in loaded] == ["Message 1", "Message 2"]
 
 
+async def test_store_inbound_message_writes_redacted_inbound_only() -> None:
+    redis = FakeRedis()
+    tenant_id = uuid4()
+    conversation_id = uuid4()
+    service = ConversationMemoryService(redis_client=redis, enabled=True)
+    inbound = Message(
+        id=uuid4(),
+        tenant_id=tenant_id,
+        conversation_id=conversation_id,
+        direction=MessageDirection.inbound,
+        body="Please save this password:super-secret",
+        sent_at=datetime.now(timezone.utc),
+    )
+    outbound = Message(
+        id=uuid4(),
+        tenant_id=tenant_id,
+        conversation_id=conversation_id,
+        direction=MessageDirection.outbound,
+        body="Outbound should not be stored",
+        sent_at=datetime.now(timezone.utc),
+    )
+
+    await service.store_inbound_message(tenant_id=tenant_id, message=inbound)
+    await service.store_inbound_message(tenant_id=tenant_id, message=outbound)
+
+    loaded = await service.load_recent(tenant_id=tenant_id, conversation_id=conversation_id)
+    assert [message.message_id for message in loaded] == [str(inbound.id)]
+    assert loaded[0].direction == "inbound"
+    assert "super-secret" not in loaded[0].body
+    assert "<REDACTED>" in loaded[0].body
+
+
 async def test_redis_failures_return_empty_memory_without_raising() -> None:
     service = ConversationMemoryService(
         redis_client=FailingRedis(),
@@ -125,6 +165,21 @@ async def test_redis_failures_return_empty_memory_without_raising() -> None:
     )
 
     assert await service.load_recent(tenant_id=uuid4(), conversation_id=uuid4()) == []
+
+
+async def test_memory_status_reports_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("app.services.conversation_memory_service.settings.memory_enabled", False)
+
+    assert await get_memory_status() == "disabled"
+
+
+async def test_memory_status_reports_unavailable_when_redis_ping_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("app.services.conversation_memory_service.settings.memory_enabled", True)
+    monkeypatch.setattr("app.services.conversation_memory_service._redis_client", FailingRedis())
+
+    assert await get_memory_status() == "unavailable"
 
 
 async def test_memory_redacts_obvious_secret_values() -> None:

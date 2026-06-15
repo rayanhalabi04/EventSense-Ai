@@ -410,7 +410,7 @@ async def generate_suggested_reply(
     session: AsyncSession,
     *,
     tenant_id: UUID,
-    user_id: UUID,
+    user_id: UUID | None,
     conversation: Conversation,
     message: Message,
     llm_client_factory: Callable[[], LLMClient | None] | None = None,
@@ -423,6 +423,7 @@ async def generate_suggested_reply(
     """
     tenant_slug = await TenantRepository(session).get_slug(tenant_id)
     guardrail_events: list[tuple[str, GuardrailResult]] = []
+    memory_messages = []
 
     input_result = check_input_guardrails(message.body, tenant_slug)
     if input_result.flags:
@@ -535,6 +536,7 @@ async def generate_suggested_reply(
         "answer_supported": generated.answer_supported,
         "generation_method": generated.generation_method,
         "llm_fallback_reason": generated.fallback_reason,
+        "memory_message_count": len(memory_messages),
         "source_document_ids": generated.source_document_ids,
         "source_document_titles": source_titles,
         "user_id": user_id,

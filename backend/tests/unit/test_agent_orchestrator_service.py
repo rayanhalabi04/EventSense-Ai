@@ -18,7 +18,9 @@ from app.models.user import UserRole
 from app.schemas.agent import SKIPPED_REASON_NOT_TRIGGER
 from app.services.agent.planner import plan_tools
 from app.services.agent.tool_registry import (
+    AgentToolRegistry,
     EXPECTED_AGENT_TOOL_NAMES,
+    UnapprovedAgentToolError,
     UnknownAgentToolError,
     create_default_tool_registry,
 )
@@ -61,6 +63,14 @@ class _FakeSession:
 
     def add(self, obj: object) -> None:
         self.added.append(obj)
+
+
+class _UnapprovedTool:
+    name = "send_client_message"
+    description = "Unapproved outbound tool."
+
+    async def run(self, context, mode):
+        raise AssertionError("unapproved tool should never run")
 
 
 # --- Trigger gate -----------------------------------------------------------
@@ -132,7 +142,7 @@ def test_complaint_recommends_escalation() -> None:
     ]
 
 
-def test_cancellation_plans_rag_reply_and_escalation() -> None:
+def test_cancellation_plans_rag_reply_without_escalation_when_not_high_risk() -> None:
     decision = AgentOrchestratorService().decide(
         _message("cancellation_request", "medium")
     )
@@ -140,7 +150,6 @@ def test_cancellation_plans_rag_reply_and_escalation() -> None:
     assert [tool.tool_name for tool in decision.tools_used] == [
         "rag_search",
         "suggest_reply",
-        "escalate_to_manager",
     ]
 
 
@@ -167,6 +176,18 @@ def test_tool_registry_rejects_unknown_tool() -> None:
         registry.get_tool("send_client_message")
 
 
+def test_tool_registry_rejects_unapproved_registered_tool() -> None:
+    with pytest.raises(UnapprovedAgentToolError, match="unapproved agent tools"):
+        AgentToolRegistry([_UnapprovedTool()])
+
+
+def test_planner_rejects_unapproved_tool_names(monkeypatch) -> None:
+    monkeypatch.setattr(planner_module, "_raw_tool_names", lambda *args, **kwargs: ["send_client_message"])
+
+    with pytest.raises(ValueError, match="unapproved agent tools planned"):
+        plan_tools("complaint", is_high_risk=False, message_body="hello")
+
+
 @pytest.mark.parametrize(
     ("intent", "risk_level", "expected_tools"),
     [
@@ -175,20 +196,25 @@ def test_tool_registry_rejects_unknown_tool() -> None:
             "medium",
             ["rag_search", "suggest_reply", "create_follow_up_task", "escalate_to_manager"],
         ),
-        ("cancellation_request", "medium", ["rag_search", "suggest_reply", "escalate_to_manager"]),
-        ("payment_issue", "medium", ["rag_search", "suggest_reply", "create_follow_up_task"]),
+        ("cancellation_request", "medium", ["rag_search", "suggest_reply"]),
+        (
+            "cancellation_request",
+            "high",
+            ["rag_search", "suggest_reply", "escalate_to_manager"],
+        ),
+        ("payment_issue", "medium", ["create_follow_up_task", "suggest_reply"]),
         (
             "payment_issue",
             "high",
-            ["rag_search", "suggest_reply", "create_follow_up_task", "escalate_to_manager"],
+            ["create_follow_up_task", "suggest_reply", "escalate_to_manager"],
         ),
-        ("urgent_change", "medium", ["rag_search", "suggest_reply", "create_follow_up_task"]),
+        ("urgent_change", "medium", ["rag_search", "create_follow_up_task", "suggest_reply"]),
         (
             "guest_count_change",
             "high",
-            ["rag_search", "suggest_reply", "create_follow_up_task", "escalate_to_manager"],
+            ["rag_search", "create_follow_up_task", "suggest_reply", "escalate_to_manager"],
         ),
-        ("human_escalation", "medium", ["suggest_reply", "escalate_to_manager"]),
+        ("human_escalation", "medium", ["escalate_to_manager"]),
     ],
 )
 def test_planner_returns_expected_tool_order(
@@ -205,8 +231,14 @@ def test_planner_returns_expected_tool_order(
     assert [item.name for item in planned] == expected_tools
 
 
-def test_cancellation_request_recommends_escalation() -> None:
+def test_cancellation_request_avoids_escalation_when_not_high_risk() -> None:
     decision = AgentOrchestratorService().decide(_message("cancellation_request", "medium"))
+
+    assert decision.recommended_escalation.should_escalate is False
+
+
+def test_high_risk_cancellation_request_recommends_escalation() -> None:
+    decision = AgentOrchestratorService().decide(_message("cancellation_request", "high"))
 
     assert decision.recommended_escalation.should_escalate is True
 

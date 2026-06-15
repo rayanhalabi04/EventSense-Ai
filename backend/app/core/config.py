@@ -17,7 +17,7 @@ class Settings(BaseSettings):
     redis_host: str = "localhost"
     redis_port: int = 6379
     redis_url: str = "redis://localhost:6379/0"
-    memory_enabled: bool = False
+    memory_enabled: bool = True
     short_term_memory_ttl_seconds: int = 604800
     short_term_memory_max_messages: int = 10
     jwt_secret_key: str = "change-me-in-local-env"
@@ -35,6 +35,10 @@ class Settings(BaseSettings):
     groq_model: str = "llama-3.1-8b-instant"
     openai_api_key: str = ""
     openai_model: str = "gpt-4o-mini"
+    telegram_enabled: bool = False
+    telegram_bot_token: str = ""
+    telegram_webhook_secret: str = ""
+    telegram_auto_reply_enabled: bool = False
     # --- RAG embeddings ---------------------------------------------------
     # Which embedding backend powers tenant-scoped RAG retrieval.
     #   "fallback" (default) -> deterministic, NON-SEMANTIC keyword/hash vectors

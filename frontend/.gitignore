@@ -10,3 +10,6 @@ dist-ssr
 .vscode/*
 !.vscode/extensions.json
 .idea
+
+.playwright-cli/
+D:\eventsense_frontend\EventSense-Ai

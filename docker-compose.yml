@@ -69,7 +69,7 @@ services:
       postgres:
         condition: service_healthy
       redis:
-        condition: service_healthy
+        condition: service_started
       migrate:
         condition: service_completed_successfully
       seed:

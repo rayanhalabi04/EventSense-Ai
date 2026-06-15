@@ -139,6 +139,8 @@ class SimulatorService:
         actor_user_id: UUID | None,
         conversation: Conversation,
         body: str,
+        source: str = WHATSAPP_SIMULATOR_SOURCE,
+        external_message_id: str | None = None,
     ) -> Message:
         now = datetime.now(timezone.utc)
         tenant_slug = await TenantRepository(session).get_slug(tenant_id)
@@ -150,7 +152,8 @@ class SimulatorService:
             direction=MessageDirection.inbound,
             status=MessageStatus.unread,
             body=body,
-            source=WHATSAPP_SIMULATOR_SOURCE,
+            source=source,
+            external_message_id=external_message_id,
             sender_user_id=None,
             sent_at=now,
         )

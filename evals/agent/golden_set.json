@@ -36,7 +36,23 @@
     "text": "We need to cancel our wedding package and understand the refund terms.",
     "intent_label": "cancellation_request",
     "risk_level": "medium",
-    "scenario": "cancellation request -> draft reply and escalate",
+    "scenario": "cancellation request, medium risk -> draft reply only",
+    "expected_tools": ["rag_search", "suggest_reply"],
+    "expected": {
+      "ran": true,
+      "skipped_reason": null,
+      "recommended_task": false,
+      "recommended_escalation": false,
+      "human_review_required": false,
+      "confidence": "high"
+    }
+  },
+  {
+    "id": "cancellation_request_high_002",
+    "text": "We need to cancel tomorrow and dispute the deposit charge immediately.",
+    "intent_label": "cancellation_request",
+    "risk_level": "high",
+    "scenario": "cancellation request, high risk -> draft reply and escalation",
     "expected_tools": ["rag_search", "suggest_reply", "escalate_to_manager"],
     "expected": {
       "ran": true,
@@ -53,7 +69,7 @@
     "intent_label": "payment_issue",
     "risk_level": "medium",
     "scenario": "payment issue, medium risk -> draft reply and task only",
-    "expected_tools": ["rag_search", "suggest_reply", "create_follow_up_task"],
+    "expected_tools": ["create_follow_up_task", "suggest_reply"],
     "expected": {
       "ran": true,
       "skipped_reason": null,
@@ -69,7 +85,7 @@
     "intent_label": "payment_issue",
     "risk_level": "high",
     "scenario": "payment issue at high risk -> task and escalation",
-    "expected_tools": ["rag_search", "suggest_reply", "create_follow_up_task", "escalate_to_manager"],
+    "expected_tools": ["create_follow_up_task", "suggest_reply", "escalate_to_manager"],
     "expected": {
       "ran": true,
       "skipped_reason": null,
@@ -85,7 +101,7 @@
     "intent_label": "urgent_change",
     "risk_level": "medium",
     "scenario": "urgent change, medium risk -> draft reply and task only",
-    "expected_tools": ["rag_search", "suggest_reply", "create_follow_up_task"],
+    "expected_tools": ["rag_search", "create_follow_up_task", "suggest_reply"],
     "expected": {
       "ran": true,
       "skipped_reason": null,
@@ -101,7 +117,7 @@
     "intent_label": "guest_count_change",
     "risk_level": "medium",
     "scenario": "guest count change -> draft reply and task only",
-    "expected_tools": ["rag_search", "suggest_reply", "create_follow_up_task"],
+    "expected_tools": ["rag_search", "create_follow_up_task", "suggest_reply"],
     "expected": {
       "ran": true,
       "skipped_reason": null,
@@ -116,8 +132,8 @@
     "text": "I want to speak to a manager about this immediately.",
     "intent_label": "human_escalation",
     "risk_level": "medium",
-    "scenario": "explicit human escalation -> suggest reply and escalate",
-    "expected_tools": ["suggest_reply", "escalate_to_manager"],
+    "scenario": "explicit human escalation -> direct manager escalation",
+    "expected_tools": ["escalate_to_manager"],
     "expected": {
       "ran": true,
       "skipped_reason": null,

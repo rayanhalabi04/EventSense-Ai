@@ -22,18 +22,18 @@ Trigger intents (agent runs):
 
 | Intent | Expected recommendation |
 |--------|--------------------------|
-| `complaint` | escalation |
-| `cancellation_request` | escalation |
+| `complaint` | task and escalation |
+| `cancellation_request` | escalation only when risk is high |
 | `payment_issue` | task (task **and** escalation when risk is high) |
-| `urgent_change` | task **and** escalation |
-| `guest_count_change` | task |
+| `urgent_change` | task (task **and** escalation when risk is high) |
+| `guest_count_change` | task (task **and** escalation when risk is high) |
 | `human_escalation` | escalation |
 
 Non-trigger intents (agent skips with `skipped_reason="intent_not_in_trigger_set"`):
 `booking_inquiry`, `pricing_request`, `service_question`, `other`.
 
 Edge rules also covered:
-- **High risk forces escalation** even for a task-only intent (`payment_issue` high → task + escalation).
+- **High risk forces escalation** for cancellation/payment/urgent/guest-count cases.
 - **Missing/unclear `risk_level`** on a trigger intent → `human_review_required=true`, `confidence="low"`.
 
 ## Command

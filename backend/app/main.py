@@ -18,6 +18,7 @@ from app.api.v1 import (
     simulator,
     suggested_replies,
     tasks,
+    telegram,
     tenants,
 )
 from app.core.config import settings
@@ -59,6 +60,7 @@ app.include_router(
 app.include_router(documents.router, prefix="/api/v1/documents", tags=["documents"])
 app.include_router(rag.router, prefix="/api/v1/rag", tags=["rag"])
 app.include_router(simulator.router, prefix="/api/v1/simulator", tags=["simulator"])
+app.include_router(telegram.router, prefix="/api/v1", tags=["telegram"])
 app.include_router(inbox.router, prefix="/api/v1/inbox", tags=["inbox"])
 app.include_router(audit_logs.router, prefix="/api/v1/audit-logs", tags=["audit-logs"])
 app.include_router(health.router, tags=["health"])

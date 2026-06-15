@@ -25,7 +25,7 @@ curl http://localhost:8000/health
 Expected response:
 
 ```json
-{"status":"ok"}
+{"status":"ok","memory":"ok"}
 ```
 
 ### Populate a Demo Environment
@@ -301,19 +301,23 @@ allowed outputs as draft/review records. Replies are never auto-sent or
 approved; human staff stay in control. Tool planning/execution, skips,
 completion, human-review fallback, and agent-created records are audit logged.
 
-Short-term conversation memory is optional and Redis-backed. By default
-`MEMORY_ENABLED=false`, so the backend does not use Redis in request flows. When
-enabled, simulator inbound messages are copied into a tenant-scoped,
-conversation-scoped Redis list with this key shape:
+Short-term conversation memory is Redis-backed and enabled in the Docker/demo
+configuration (`MEMORY_ENABLED=true` in `.env.example`). Simulator inbound
+messages are copied into a tenant-scoped, conversation-scoped Redis list with
+this key shape:
 
 ```text
 tenant:{tenant_id}:conversation:{conversation_id}:memory
 ```
 
 Suggested replies load the most recent memory entries and include them in the
-LLM prompt as recent conversation context. The deterministic template fallback
-does not require memory, and Redis read/write failures are logged without
-failing simulator or suggested-reply requests.
+LLM prompt as recent conversation context, which helps follow-up questions such
+as "Will that change the price?" refer back to earlier messages in the same
+conversation. The deterministic template fallback does not reason over memory;
+it still uses the current message and tenant RAG sources. Redis read/write or
+health-check failures are logged/reported as memory unavailable without failing
+simulator or suggested-reply requests. `/health` includes `memory` as `ok`,
+`disabled`, or `unavailable`; memory is not a hard readiness dependency.
 
 ```env
 REDIS_URL=redis://redis:6379/0
@@ -321,6 +325,10 @@ MEMORY_ENABLED=true
 SHORT_TERM_MEMORY_TTL_SECONDS=604800
 SHORT_TERM_MEMORY_MAX_MESSAGES=10
 ```
+
+The default TTL is 604800 seconds (7 days). The list is trimmed to the most
+recent 10 messages, and obvious secret values such as API keys, bearer tokens,
+and passwords are redacted before storage.
 
 Manual demo flow:
 
@@ -358,6 +366,31 @@ curl -s -X PATCH "http://localhost:8088/api/v1/suggested-replies/${REPLY_ID}" \
   -H 'Content-Type: application/json' \
   -d '{"status":"approved"}' | python3 -m json.tool
 ```
+
+Follow-up memory demo:
+
+```bash
+FIRST="$(
+  curl -s -X POST http://localhost:8088/api/v1/simulator/messages \
+    -H "Authorization: Bearer ${TOKEN}" \
+    -H 'Content-Type: application/json' \
+    -d '{"client_name":"Memory Demo","client_contact":"+96170100300","body":"Can we add 30 more guests?"}'
+)"
+CONVERSATION_ID="$(printf '%s' "${FIRST}" | python3 -c 'import json,sys; print(json.load(sys.stdin)["conversation_id"])')"
+
+curl -s -X POST http://localhost:8088/api/v1/simulator/messages \
+  -H "Authorization: Bearer ${TOKEN}" \
+  -H 'Content-Type: application/json' \
+  -d '{"conversation_id":"'"${CONVERSATION_ID}"'","body":"Will that change the price?"}'
+
+curl -s -X POST "http://localhost:8088/api/v1/conversations/${CONVERSATION_ID}/suggested-reply" \
+  -H "Authorization: Bearer ${TOKEN}" | python3 -m json.tool
+```
+
+With `LLM_ENABLED=true`, the LLM prompt includes both recent messages as memory
+context. With the default deterministic template, the request still succeeds
+but follow-up pronoun resolution is limited to the current message and retrieved
+tenant documents.
 
 For an unsupported question, create another simulator message such as
 `Can you book my honeymoon flight?` and generate a suggested reply for that

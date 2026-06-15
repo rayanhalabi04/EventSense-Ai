@@ -1,107 +1,117 @@
-@import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap");
-
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
-/**
- * EventSense AI semantic theme.
- *
- * Brand palette → HSL:
- *   charcoal #172121 = 180 18% 11%
- *   slate    #444554 = 232 11% 30%
- *   mauve    #7F7B82 = 274  3% 50%
- *   rose     #BFACB5 = 327 13% 71%
- *   blush    #E5D0CC = 11  35% 85%
- *
- * Light, warm, professional surface with a deep charcoal sidebar.
- */
 @layer base {
   :root {
-    --background: 24 33% 98%;
-    --foreground: 180 18% 11%;
-
-    --card: 0 0% 100%;
-    --card-foreground: 180 18% 11%;
-
-    --popover: 0 0% 100%;
-    --popover-foreground: 180 18% 11%;
-
-    /* Primary = charcoal (main actions, emphasis) */
-    --primary: 180 18% 11%;
-    --primary-foreground: 11 35% 96%;
-
-    /* Secondary = soft blush surface */
-    --secondary: 14 32% 93%;
-    --secondary-foreground: 180 18% 16%;
-
-    --muted: 20 16% 95%;
-    --muted-foreground: 274 4% 42%;
-
-    /* Accent = dusty rose */
-    --accent: 327 18% 84%;
-    --accent-foreground: 180 18% 14%;
-
-    --destructive: 4 68% 50%;
-    --destructive-foreground: 0 0% 100%;
-
-    --success: 152 42% 36%;
-    --success-foreground: 0 0% 100%;
-
-    --warning: 33 88% 48%;
-    --warning-foreground: 30 40% 12%;
-
-    --border: 20 14% 89%;
-    --input: 20 14% 88%;
-    --ring: 327 18% 60%;
-
-    --radius: 0.7rem;
-
-    /* Sidebar (deep charcoal) */
-    --sidebar: 180 18% 11%;
-    --sidebar-foreground: 14 30% 92%;
-    --sidebar-muted: 274 5% 62%;
-    --sidebar-accent: 327 22% 74%;
-    --sidebar-border: 180 12% 20%;
-  }
-}
-
-@layer base {
-  * {
-    @apply border-border;
+    --color-primary: #172033;
+    --color-primary-soft: #25314A;
+    --color-accent: #C8A96A;
+    --color-accent-soft: #F3E8D2;
+    --color-bg: #FBF7EF;
+    --color-surface: #FFFFFF;
+    --color-surface-warm: #F8F1E7;
+    --color-border: #E3DACE;
+    --color-border-focus: #C8A96A;
+    --color-text-primary: #172033;
+    --color-text-body: #3D3A36;
+    --color-text-muted: #77716A;
   }
 
   html {
-    -webkit-text-size-adjust: 100%;
+    font-family: 'Inter', system-ui, sans-serif;
+    background-color: var(--color-bg);
+    color: var(--color-text-body);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    scroll-behavior: smooth;
   }
 
-  body {
-    @apply bg-background text-foreground antialiased;
-    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  * {
+    box-sizing: border-box;
   }
 
-  /* Accessible, on-brand focus ring across all interactive elements. */
-  :focus-visible {
-    @apply outline-none ring-2 ring-ring ring-offset-2 ring-offset-background;
+  ::selection {
+    background-color: #C8A96A33;
+    color: #172033;
+  }
+
+  /* Custom scrollbar */
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: #D8D0C6;
+    border-radius: 3px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: #CFC3B5;
   }
 }
 
-@layer utilities {
-  .text-balance {
-    text-wrap: balance;
+@layer components {
+  .font-display {
+    font-family: 'Newsreader', Georgia, serif;
   }
 
-  /* Subtle scrollbar that fits the warm theme. */
-  .scrollbar-thin {
-    scrollbar-width: thin;
-    scrollbar-color: hsl(var(--border)) transparent;
+  .btn-primary {
+    @apply inline-flex items-center justify-center gap-2 px-5 py-2.5 bg-primary text-white text-sm font-semibold rounded-md transition-all duration-200 hover:bg-primary-soft active:scale-[0.98] focus:outline-none focus:ring-2 focus:ring-accent focus:ring-offset-2;
   }
-  .scrollbar-thin::-webkit-scrollbar {
-    width: 8px;
-    height: 8px;
+
+  .btn-secondary {
+    @apply inline-flex items-center justify-center gap-2 px-5 py-2.5 bg-transparent border border-border text-text-primary text-sm font-semibold rounded-md transition-all duration-200 hover:bg-surface-warm hover:border-border-strong active:scale-[0.98] focus:outline-none focus:ring-2 focus:ring-accent focus:ring-offset-2;
   }
-  .scrollbar-thin::-webkit-scrollbar-thumb {
-    background-color: hsl(var(--border));
-    border-radius: 9999px;
+
+  .btn-ghost {
+    @apply inline-flex items-center justify-center gap-2 px-4 py-2 bg-transparent text-text-muted text-sm font-medium rounded-md transition-all duration-150 hover:bg-surface-warm hover:text-text-primary active:scale-[0.98] focus:outline-none;
+  }
+
+  .card {
+    @apply bg-surface rounded-lg shadow-card border border-border;
+  }
+
+  .input-base {
+    @apply w-full px-3.5 py-2.5 text-sm text-text-primary bg-surface border border-border rounded-md placeholder:text-text-muted transition-all duration-150 focus:outline-none focus:ring-2 focus:ring-border-focus focus:border-border-focus;
+  }
+
+  .badge {
+    @apply inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded-full;
+  }
+
+  .badge-success {
+    @apply badge bg-success-soft text-success;
+  }
+
+  .badge-warning {
+    @apply badge bg-warning-soft text-warning;
+  }
+
+  .badge-danger {
+    @apply badge bg-danger-soft text-danger;
+  }
+
+  .badge-info {
+    @apply badge bg-info-soft text-info;
+  }
+
+  .badge-neutral {
+    @apply badge bg-surface-high text-text-muted;
+  }
+
+  .section-label {
+    @apply text-xs font-semibold tracking-widest uppercase text-accent;
+  }
+
+  /* Reduce motion */
+  @media (prefers-reduced-motion: reduce) {
+    *, ::before, ::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+    }
   }
 }

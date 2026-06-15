@@ -300,6 +300,78 @@ async def test_apply_true_payment_issue_creates_task_only(
     assert str(tasks[0].id) == body["applied"]["task_id"]
 
 
+async def test_apply_true_medium_cancellation_does_not_escalate(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    demo_tenants: dict[str, Tenant],
+) -> None:
+    token = await login(client)
+    conversation = await create_conversation(client, token)
+    message = await seed_inbound_message(
+        db_session,
+        tenant=demo_tenants["elegant-weddings"],
+        conversation_id=conversation["id"],
+        body="We need to cancel our package and understand the refund policy.",
+        intent_label="cancellation_request",
+        risk_level="medium",
+    )
+
+    response = await run_agent(client, token, conversation["id"], str(message.id), apply=True)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["recommended_task"]["should_create"] is False
+    assert body["recommended_escalation"]["should_escalate"] is False
+    assert body["applied"]["task_id"] is None
+    assert body["applied"]["escalation_id"] is None
+    assert [tool["tool_name"] for tool in body["tools_used"]] == [
+        "rag_search",
+        "suggest_reply",
+    ]
+
+    assert await _tasks_for(db_session, conversation["id"]) == []
+    assert await _escalations_for(db_session, conversation["id"]) == []
+
+
+async def test_apply_true_human_escalation_runs_direct_escalation_only(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    demo_tenants: dict[str, Tenant],
+) -> None:
+    token = await login(client)
+    conversation = await create_conversation(client, token)
+    message = await seed_inbound_message(
+        db_session,
+        tenant=demo_tenants["elegant-weddings"],
+        conversation_id=conversation["id"],
+        body="I want a manager to call me right away.",
+        intent_label="human_escalation",
+        risk_level="medium",
+    )
+
+    response = await run_agent(client, token, conversation["id"], str(message.id), apply=True)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["recommended_task"]["should_create"] is False
+    assert body["recommended_escalation"]["should_escalate"] is True
+    assert body["applied"]["task_id"] is None
+    assert body["applied"]["escalation_id"] is not None
+    assert body["applied"]["suggested_reply_id"] is None
+    assert [tool["tool_name"] for tool in body["tools_used"]] == ["escalate_to_manager"]
+
+    assert await _tasks_for(db_session, conversation["id"]) == []
+    assert len(await _escalations_for(db_session, conversation["id"])) == 1
+    replies = (
+        await db_session.execute(
+            select(SuggestedReply).where(
+                SuggestedReply.conversation_id == UUID(conversation["id"])
+            )
+        )
+    ).scalars().all()
+    assert replies == []
+
+
 async def test_apply_true_complaint_creates_task_and_escalation(
     client: AsyncClient,
     db_session: AsyncSession,

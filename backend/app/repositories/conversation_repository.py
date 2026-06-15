@@ -48,6 +48,25 @@ class ConversationRepository:
         result = await self.session.execute(query)
         return result.scalar_one_or_none()
 
+    async def find_by_external_conversation_id(
+        self,
+        tenant_id: UUID,
+        *,
+        source: str,
+        external_conversation_id: str,
+    ) -> Conversation | None:
+        result = await self.session.execute(
+            select(Conversation)
+            .where(
+                Conversation.tenant_id == tenant_id,
+                Conversation.source == source,
+                Conversation.external_conversation_id == external_conversation_id,
+            )
+            .order_by(Conversation.created_at.desc())
+            .limit(1)
+        )
+        return result.scalar_one_or_none()
+
     async def add(self, conversation: Conversation) -> Conversation:
         self.session.add(conversation)
         await self.session.flush()

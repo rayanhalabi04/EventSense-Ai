@@ -16,6 +16,9 @@ logger = logging.getLogger(__name__)
 
 
 class RedisClient(Protocol):
+    async def ping(self) -> Any:
+        ...
+
     async def lpush(self, key: str, *values: str) -> Any:
         ...
 
@@ -134,6 +137,22 @@ class ConversationMemoryService:
 
     def _usable(self) -> bool:
         return self.enabled and bool(settings.redis_url.strip()) and self.max_messages > 0
+
+
+async def get_memory_status() -> str:
+    if not settings.memory_enabled:
+        return "disabled"
+    if not settings.redis_url.strip():
+        return "unavailable"
+    client = _get_redis_client()
+    if client is None:
+        return "unavailable"
+    try:
+        await client.ping()
+    except Exception:
+        logger.warning("conversation memory redis health check failed", exc_info=True)
+        return "unavailable"
+    return "ok"
 
 
 def _get_redis_client() -> RedisClient | None:

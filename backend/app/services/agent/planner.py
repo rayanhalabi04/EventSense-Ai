@@ -39,21 +39,12 @@ AGENT_TRIGGER_INTENTS = frozenset(
 KNOWN_RISK_LEVELS = frozenset({RISK_LEVEL_LOW, RISK_LEVEL_MEDIUM, RISK_LEVEL_HIGH})
 AGENT_MAX_TOOL_CALLS = int(os.getenv("AGENT_MAX_TOOL_CALLS", "4"))
 
-_POLICY_QUESTION_KEYWORDS = frozenset(
+APPROVED_TOOL_NAMES = frozenset(
     {
-        "policy",
-        "refund",
-        "cancel",
-        "cancellation",
-        "deposit",
-        "payment",
-        "price",
-        "pricing",
-        "package",
-        "guest count",
-        "contract",
-        "included",
-        "include",
+        TOOL_RAG_SEARCH,
+        TOOL_SUGGEST_REPLY,
+        TOOL_CREATE_FOLLOW_UP_TASK,
+        TOOL_ESCALATE_TO_MANAGER,
     }
 )
 
@@ -69,6 +60,9 @@ def plan_tools(
     message_body: str,
 ) -> list[AgentToolPlanItem]:
     raw_plan = _raw_tool_names(intent, is_high_risk=is_high_risk, message_body=message_body)
+    unapproved_tools = sorted(set(raw_plan) - APPROVED_TOOL_NAMES)
+    if unapproved_tools:
+        raise ValueError(f"unapproved agent tools planned: {unapproved_tools}")
     if len(raw_plan) > AGENT_MAX_TOOL_CALLS:
         raw_plan = trim_plan_safely(raw_plan)
     return [AgentToolPlanItem(name=tool_name) for tool_name in raw_plan]
@@ -95,18 +89,22 @@ def _raw_tool_names(intent: str | None, *, is_high_risk: bool, message_body: str
             TOOL_ESCALATE_TO_MANAGER,
         ]
     if intent == INTENT_CANCELLATION_REQUEST:
-        return [TOOL_RAG_SEARCH, TOOL_SUGGEST_REPLY, TOOL_ESCALATE_TO_MANAGER]
-    if intent in {INTENT_PAYMENT_ISSUE, INTENT_URGENT_CHANGE, INTENT_GUEST_COUNT_CHANGE}:
-        plan = [TOOL_RAG_SEARCH, TOOL_SUGGEST_REPLY, TOOL_CREATE_FOLLOW_UP_TASK]
+        plan = [TOOL_RAG_SEARCH, TOOL_SUGGEST_REPLY]
+        if is_high_risk:
+            plan.append(TOOL_ESCALATE_TO_MANAGER)
+        return plan
+    if intent == INTENT_PAYMENT_ISSUE:
+        plan = [TOOL_CREATE_FOLLOW_UP_TASK, TOOL_SUGGEST_REPLY]
+        if is_high_risk:
+            plan.append(TOOL_ESCALATE_TO_MANAGER)
+        return plan
+    if intent in {INTENT_URGENT_CHANGE, INTENT_GUEST_COUNT_CHANGE}:
+        plan = [TOOL_RAG_SEARCH, TOOL_CREATE_FOLLOW_UP_TASK, TOOL_SUGGEST_REPLY]
         if is_high_risk:
             plan.append(TOOL_ESCALATE_TO_MANAGER)
         return plan
     if intent == INTENT_HUMAN_ESCALATION:
-        plan = []
-        if contains_policy_question(message_body):
-            plan.append(TOOL_RAG_SEARCH)
-        plan.extend([TOOL_SUGGEST_REPLY, TOOL_ESCALATE_TO_MANAGER])
-        return plan
+        return [TOOL_ESCALATE_TO_MANAGER]
     return []
 
 
@@ -119,14 +117,13 @@ def trim_plan_safely(plan: list[str]) -> list[str]:
     ]
     trimmed: list[str] = []
     for tool_name in priority:
-        if tool_name in plan and len(trimmed) < AGENT_MAX_TOOL_CALLS:
+        if (
+            tool_name in plan
+            and tool_name in APPROVED_TOOL_NAMES
+            and len(trimmed) < AGENT_MAX_TOOL_CALLS
+        ):
             trimmed.append(tool_name)
     return trimmed
-
-
-def contains_policy_question(message_body: str) -> bool:
-    text = message_body.lower()
-    return any(keyword in text for keyword in _POLICY_QUESTION_KEYWORDS)
 
 
 def decide_task(intent: str | None) -> RecommendedTask:
@@ -148,6 +145,4 @@ def decide_escalation(intent: str | None, *, is_high_risk: bool) -> RecommendedE
         return RecommendedEscalation(should_escalate=True, reason="high_risk")
     if intent == INTENT_COMPLAINT:
         return RecommendedEscalation(should_escalate=True, reason="complaint_intent")
-    if intent == INTENT_CANCELLATION_REQUEST:
-        return RecommendedEscalation(should_escalate=True, reason="cancellation_request_intent")
     return RecommendedEscalation(should_escalate=False, reason=None)

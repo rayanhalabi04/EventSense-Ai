@@ -51,6 +51,17 @@ def test_payment_issue_becomes_medium_or_high_based_on_language():
     assert high.flags == ["payment_risk"]
 
 
+def test_payment_issue_with_explicit_human_escalation_becomes_high_with_both_flags():
+    risk = detect_message_risk(
+        "My deposit payment failed and I need to speak to a manager now.",
+        "payment_issue",
+    )
+
+    assert risk.level == "high"
+    assert risk.flags == ["payment_risk", "human_escalation_needed"]
+    assert "human or manager escalation" in risk.reason
+
+
 def test_other_unclear_request_becomes_medium_risk():
     risk = detect_message_risk("I am not sure this request makes sense.", "other")
 

@@ -4,9 +4,10 @@
 #
 # Checks: /health readiness -> demo login -> classify a simulated message ->
 # create a tenant document -> generate a grounded suggested reply -> verify an
-# unsupported refusal -> verify audit logs -> run the dry-run focused agent
-# (apply=false) on a risky message (recommends escalation, writes nothing) and
-# confirm it skips a non-risky message.
+# unsupported refusal -> verify Redis-backed memory reaches the suggested-reply
+# flow -> verify audit logs -> run the dry-run focused agent (apply=false) on a
+# risky message (recommends escalation, writes nothing) and confirm it skips a
+# non-risky message.
 #
 # Prints [PASS]/[FAIL]/[SKIP] per check, writes a machine-readable result to
 # eval-artifacts/docker_smoke.json (consumed by Spec 015 `docker_smoke`), and
@@ -184,6 +185,34 @@ except Exception:
 PY
 }
 
+json_audit_reply_detail_at_least() { # json event_type suggested_reply_id detail_key minimum
+  JSON_INPUT="$1" python3 - "$2" "$3" "$4" "$5" <<'PY'
+import json
+import os
+import sys
+
+event_type = sys.argv[1]
+reply_id = sys.argv[2]
+detail_key = sys.argv[3]
+minimum = int(sys.argv[4])
+try:
+    items = json.loads(os.environ.get("JSON_INPUT", ""))
+    matched = False
+    for item in items:
+        details = item.get("details", {})
+        if (
+            item.get("event_type") == event_type
+            and details.get("suggested_reply_id") == reply_id
+            and int(details.get(detail_key, 0)) >= minimum
+        ):
+            matched = True
+            break
+    print("true" if matched else "false")
+except Exception:
+    print("false")
+PY
+}
+
 json_audit_has_event_for_resource() { # json event_type resource_id
   JSON_INPUT="$1" python3 - "$2" "$3" <<'PY'
 import json
@@ -318,7 +347,7 @@ if [ -n "${token}" ]; then
   smoke_stamp="$(date -u +%Y%m%d%H%M%S)"
   smoke_marker="SMOKE_POLICY_${smoke_stamp}_${RANDOM}"
   doc_title="Smoke Sparkler Policy ${smoke_marker}"
-  doc_text="${smoke_marker}: sparkler exits are allowed only in the garden courtyard when a safety attendant is booked."
+  doc_text="${smoke_marker}: sparkler exits are allowed only in the garden courtyard when a safety attendant is booked. ${smoke_marker}: adding 30 more guests may change the price because final catering is billed using the confirmed guest count and per-guest rate."
   doc_payload="$(json_payload \
     title "${doc_title}" \
     document_type "faq" \
@@ -370,7 +399,46 @@ else
   record "suggested_reply_supported" false "skipped: missing auth token or document"
 fi
 
-# --- Check 6: unsupported suggested reply refuses without sources ------------
+# --- Check 6: memory context reaches suggested reply flow --------------------
+memory_reply_id=""
+if [ -n "${token}" ] && [ -n "${document_id}" ]; then
+  memory_first_payload="$(json_payload \
+    client_name "Smoke Memory Client" \
+    body "Can we add 30 more guests? (${smoke_marker})")"
+  memory_first_body="$(curl -s -X POST "${API_BASE_URL}/api/v1/simulator/messages" \
+    -H 'Content-Type: application/json' -H "Authorization: Bearer ${token}" \
+    -d "${memory_first_payload}" 2>/dev/null || true)"
+  memory_conversation_id="$(json_get "${memory_first_body}" conversation_id)"
+  if [ -n "${memory_conversation_id}" ]; then
+    memory_second_payload="$(json_payload \
+      conversation_id "${memory_conversation_id}" \
+      body "Will that change the price? (${smoke_marker})")"
+    memory_second_body="$(curl -s -X POST "${API_BASE_URL}/api/v1/simulator/messages" \
+      -H 'Content-Type: application/json' -H "Authorization: Bearer ${token}" \
+      -d "${memory_second_payload}" 2>/dev/null || true)"
+    memory_second_conversation_id="$(json_get "${memory_second_body}" conversation_id)"
+    if [ "${memory_second_conversation_id}" = "${memory_conversation_id}" ]; then
+      memory_reply_body="$(curl -s -X POST \
+        "${API_BASE_URL}/api/v1/conversations/${memory_conversation_id}/suggested-reply" \
+        -H "Authorization: Bearer ${token}" 2>/dev/null || true)"
+      memory_reply_id="$(json_get "${memory_reply_body}" id)"
+      memory_supported="$(json_get "${memory_reply_body}" answer_supported)"
+      if [ -n "${memory_reply_id}" ] && [ "${memory_supported}" = "true" ]; then
+        record "suggested_reply_memory_followup" true "follow-up reply generated in same conversation; audit verifies loaded memory"
+      else
+        record "suggested_reply_memory_followup" false "follow-up reply was not generated as supported"
+      fi
+    else
+      record "suggested_reply_memory_followup" false "second memory message did not reuse the first conversation"
+    fi
+  else
+    record "suggested_reply_memory_followup" false "first memory message was not created"
+  fi
+else
+  record "suggested_reply_memory_followup" false "skipped: missing auth token or document"
+fi
+
+# --- Check 7: unsupported suggested reply refuses without sources ------------
 unsupported_reply_id=""
 if [ -n "${token}" ]; then
   unsupported_msg_payload="$(json_payload \
@@ -403,7 +471,7 @@ else
   record "suggested_reply_refusal" false "skipped: no auth token"
 fi
 
-# --- Check 7: audit log includes AI flow events ------------------------------
+# --- Check 8: audit log includes AI flow events ------------------------------
 if [ -n "${token}" ]; then
   audit_body="$(curl -s "${API_BASE_URL}/api/v1/audit-logs?limit=200" \
     -H "Authorization: Bearer ${token}" 2>/dev/null || true)"
@@ -411,16 +479,18 @@ if [ -n "${token}" ]; then
     "${audit_body}" "suggested_reply.generated" "${supported_reply_id}")"
   has_refusal="$(json_audit_has_reply_event \
     "${audit_body}" "suggested_reply.refused_no_source" "${unsupported_reply_id}")"
-  if [ "${has_generated}" = "true" ] && [ "${has_refusal}" = "true" ]; then
-    record "audit_ai_flow" true "found suggested reply generated and refusal audit events"
+  memory_count_ok="$(json_audit_reply_detail_at_least \
+    "${audit_body}" "suggested_reply.generated" "${memory_reply_id}" "memory_message_count" 2)"
+  if [ "${has_generated}" = "true" ] && [ "${has_refusal}" = "true" ] && [ "${memory_count_ok}" = "true" ]; then
+    record "audit_ai_flow" true "found generated/refusal audit events and memory_message_count>=2"
   else
-    record "audit_ai_flow" false "missing suggested reply generated/refusal audit events"
+    record "audit_ai_flow" false "missing generated/refusal audit events or memory_message_count>=2"
   fi
 else
   record "audit_ai_flow" false "skipped: no auth token"
 fi
 
-# --- Check 8: dry-run agent runs + recommends escalation for a risky message -
+# --- Check 9: dry-run agent runs + recommends escalation for a risky message -
 # The focused agent only runs for risky/complex intents and never writes here
 # (apply=false). A complaint should run the agent and recommend escalation.
 risky_conversation_id=""
