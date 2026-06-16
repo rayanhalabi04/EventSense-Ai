@@ -127,6 +127,8 @@ export interface ConversationDetail {
   latest_risk_detected_at?: string | null
   audit_timeline: ConversationAuditEvent[]
   suggested_reply?: SuggestedReply | null
+  /** Why the Telegram auto-reply was skipped for the current pending draft (debug aid). */
+  auto_reply_skip_reason?: string | null
   rag_sources: RagSource[]
   tasks: Task[]
   escalations: Escalation[]

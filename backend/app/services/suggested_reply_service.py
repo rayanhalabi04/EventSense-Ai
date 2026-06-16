@@ -186,6 +186,19 @@ def _first_sentence_containing(text: str, keywords: tuple[str, ...]) -> str | No
     return None
 
 
+def _first_complete_sentence(text: str) -> str | None:
+    """Return the first sentence that ends with terminal punctuation.
+
+    Used as a safe fallback instead of raw-slicing RAG content, so the generated
+    reply never ends mid-sentence.
+    """
+    for raw in re.split(r"(?<=[.!?])\s+", text.replace("\n", " ")):
+        candidate = raw.strip()
+        if candidate and candidate[-1] in ".!?":
+            return candidate
+    return None
+
+
 def _needs_escalation(message_body: str, content: str, risk_level: str | None) -> bool:
     if risk_level == "high":
         return True
@@ -254,8 +267,19 @@ def build_supported_reply(
             combined, tuple(word for word in message_body.lower().split() if len(word) > 3)
         )
         if sentence is None:
-            sentence = _first_sentence_containing(combined, ("policy", "the", "is")) or combined[:240]
-        parts.append(f"According to our {primary_title}: {sentence}")
+            # Never raw-slice RAG content (that produced mid-sentence replies);
+            # fall back to the first *complete* sentence, or a safe complete line.
+            sentence = (
+                _first_sentence_containing(combined, ("policy", "the", "is"))
+                or _first_complete_sentence(combined)
+            )
+        if sentence:
+            parts.append(f"According to our {primary_title}: {sentence}")
+        else:
+            parts.append(
+                f"I can share what's in our {primary_title}; a member of our team "
+                "will follow up with the details."
+            )
 
     if _needs_escalation(message_body, combined, risk_level):
         parts.append(ESCALATION_SENTENCE)

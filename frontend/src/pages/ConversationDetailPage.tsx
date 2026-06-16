@@ -174,6 +174,11 @@ export function ConversationDetailPage() {
                 <div className="flex items-center gap-2 mb-2">
                   <Sparkles className="w-3.5 h-3.5 text-accent" />
                   <span className="text-xs font-semibold text-text-primary">AI suggested reply</span>
+                  {import.meta.env.DEV && conv.auto_reply_skip_reason && (
+                    <span className="text-[10px] text-text-muted font-mono">
+                      (auto-reply skipped: {conv.auto_reply_skip_reason})
+                    </span>
+                  )}
                 </div>
                 {generateReply.isPending ? (
                   <div className="h-8 flex items-center gap-2 text-xs text-text-muted">

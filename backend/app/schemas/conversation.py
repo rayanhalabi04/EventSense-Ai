@@ -89,6 +89,11 @@ class ConversationDetailResponse(BaseModel):
     latest_risk_detected_at: datetime | None = None
     audit_timeline: list[ConversationDetailAuditEvent]
     suggested_reply: SuggestedReplyRead | None = None
+    # Debugging aid: when the latest suggested reply is a pending draft (not
+    # auto-sent), this carries the reason the Telegram auto-reply was skipped
+    # (e.g. "no_rag_source", "blocked_intent") so it is visible without digging
+    # through the audit log. None when the reply was auto-sent or never skipped.
+    auto_reply_skip_reason: str | None = None
     rag_sources: list[dict[str, object]]
     tasks: list[TaskRead]
     escalations: list[EscalationRead]

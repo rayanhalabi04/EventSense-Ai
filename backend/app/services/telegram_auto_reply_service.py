@@ -37,7 +37,6 @@ AUTO_REPLY_BLOCKED_INTENTS = {
     "human_escalation",
     "other",
 }
-AUTO_REPLY_MIN_CONFIDENCE = 0.70
 AUTO_REPLY_RISKY_KEYWORDS = (
     "payment",
     "paid",
@@ -104,9 +103,28 @@ STAFF_FACING_SENTENCE_MARKERS = (
 # Telegram is read on phones, so client replies must stay short. We trim long
 # package detail down to the essentials and append a single warm closing line.
 TELEGRAM_MAX_REPLY_CHARS = 600
+# Telegram's own hard cap is 4096; used when delivering a staff/manual reply we
+# must not over-summarize but still must keep within Telegram limits.
+TELEGRAM_HARD_CHAR_LIMIT = 4096
 TEAM_HELP_CLOSING = (
     "A member of our team can help you choose the best option based on your "
     "event needs."
+)
+# Sent instead of an incomplete/empty reply so a client never receives a
+# mid-sentence fragment (see safe_trim_client_message).
+SAFE_CLIENT_FALLBACK = (
+    "Thank you for your message. A member of our team will review your request "
+    "and follow up with you shortly."
+)
+_TERMINAL_PUNCTUATION = ".!?"
+_CLOSING_WRAPPERS = "\"')]”’»"
+# A trailing connector/preposition means the sentence was cut off; never end on
+# one of these.
+DANGLING_CONNECTOR_ENDINGS = (
+    "and", "or", "but", "because", "with", "without", "to", "for", "of", "in",
+    "on", "at", "by", "as", "if", "so", "that", "the", "a", "an", "once", "when",
+    "while", "since", "however", "regarding", "including", "such as", "note that",
+    "please note that", "according to",
 )
 # Detail lines clients don't need up front (they can ask, and a team member can
 # walk them through extras). Dropped from the concise Telegram reply only — the
@@ -240,14 +258,28 @@ class TelegramAutoReplyService:
 
     @staticmethod
     def _preliminary_skip_reason(message: Message) -> str | None:
+        """Deterministic pre-RAG eligibility check for auto-reply.
+
+        Auto-reply is allowed only when ALL of these hold:
+          * ``risk_level`` is "low" (risk detection is independent of intent),
+          * ``intent_label`` is in the explicit allow-list of informational
+            intents (pricing/availability/service/booking) and not in the
+            blocked set (complaints, cancellations, payments, escalations…),
+          * the body contains none of the risky keywords.
+
+        Intent *confidence* is intentionally NOT a gate. The baseline TF-IDF
+        classifier is poorly calibrated and emits 0.2–0.4 confidence for clear
+        service/package questions, so a confidence threshold made auto-reply
+        non-deterministic ("works in some cases"). The real safety nets are
+        low-risk + allow-listed intent + RAG grounding + guardrails (the latter
+        two enforced after generation in ``_generated_reply_skip_reason``).
+        """
         if message.risk_level != "low":
             return "risk_not_low"
         if message.intent_label in AUTO_REPLY_BLOCKED_INTENTS:
             return "blocked_intent"
         if message.intent_label not in AUTO_REPLY_ALLOWED_INTENTS:
             return "intent_not_allowed"
-        if message.intent_confidence is None or message.intent_confidence < AUTO_REPLY_MIN_CONFIDENCE:
-            return "low_confidence"
         if _contains_risky_keyword(message.body):
             return "risky_keyword"
         return None
@@ -310,7 +342,14 @@ def _contains_risky_keyword(text: str) -> bool:
 
 
 def client_facing_auto_reply_text(text: str) -> str:
-    cleaned = text.strip()
+    cleaned = _strip_staff_facing_prefixes(text)
+    cleaned = telegram_plain_text(cleaned)
+    cleaned = _strip_staff_facing_sentences(cleaned)
+    return _concise_telegram_reply(cleaned)
+
+
+def _strip_staff_facing_prefixes(text: str) -> str:
+    cleaned = (text or "").strip()
     changed = True
     while changed and cleaned:
         changed = False
@@ -320,9 +359,7 @@ def client_facing_auto_reply_text(text: str) -> str:
                 cleaned = stripped.strip()
                 changed = True
                 break
-    cleaned = telegram_plain_text(cleaned)
-    cleaned = _strip_staff_facing_sentences(cleaned)
-    return _concise_telegram_reply(cleaned)
+    return cleaned
 
 
 def _strip_staff_facing_sentences(text: str) -> str:
@@ -358,9 +395,10 @@ def _is_staff_facing_sentence(sentence: str) -> bool:
 def _concise_telegram_reply(text: str) -> str:
     """Shape the cleaned reply into a short, mobile-friendly Telegram message.
 
-    Drops long add-on/overtime/fee detail lines, caps the overall length, and
-    appends a single warm closing line. Returns ``""`` for empty input so the
-    caller still skips sending (never sends a closing-only message).
+    Drops long add-on/overtime/fee detail lines (pricing summarization), caps the
+    overall length at a *safe sentence boundary*, and appends a single warm
+    closing line. Returns ``""`` for empty/incomplete input so the caller skips
+    sending (never sends a closing-only or mid-sentence message).
     """
     if not text.strip():
         return ""
@@ -370,14 +408,14 @@ def _concise_telegram_reply(text: str) -> str:
         for line in text.split("\n")
         if not (line.strip() and _is_addon_detail_line(line))
     ]
-    trimmed = re.sub(r"\n{3,}", "\n\n", "\n".join(kept_lines)).strip()
-    trimmed = _truncate_to_budget(trimmed, TELEGRAM_MAX_REPLY_CHARS)
-    if not trimmed:
+    body = re.sub(r"\n{3,}", "\n\n", "\n".join(kept_lines)).strip()
+    body = safe_trim_client_message(body, TELEGRAM_MAX_REPLY_CHARS)
+    if not body:
         return ""
 
-    if "member of our team can help you choose" not in trimmed.lower():
-        trimmed = f"{trimmed}\n\n{TEAM_HELP_CLOSING}"
-    return trimmed
+    if "member of our team can help you choose" not in body.lower():
+        body = f"{body}\n\n{TEAM_HELP_CLOSING}"
+    return body
 
 
 def _is_addon_detail_line(line: str) -> bool:
@@ -385,30 +423,97 @@ def _is_addon_detail_line(line: str) -> bool:
     return any(marker in lowered for marker in ADDON_DETAIL_MARKERS)
 
 
-def _truncate_to_budget(text: str, budget: int) -> str:
-    """Keep whole lines up to ``budget`` characters; fall back to sentences."""
-    if len(text) <= budget:
-        return text
-    kept: list[str] = []
+def staff_facing_telegram_text(text: str) -> str:
+    """Format a staff/manual reply for Telegram delivery.
+
+    Unlike the auto-reply path this does NOT apply pricing summarization (no
+    dropping of add-on/fee lines, no auto closing) — it preserves the staff's
+    answer, so cancellation/refund/policy replies keep their critical text. It
+    still strips internal framing and guarantees the message is complete (never
+    mid-sentence) and within Telegram's hard limit. Returns ``""`` when nothing
+    complete remains, so the caller can substitute the safe fallback.
+    """
+    cleaned = _strip_staff_facing_prefixes(text)
+    cleaned = telegram_plain_text(cleaned)
+    cleaned = _strip_staff_facing_sentences(cleaned)
+    return safe_trim_client_message(cleaned, TELEGRAM_HARD_CHAR_LIMIT)
+
+
+def _ends_completely(text: str) -> bool:
+    """True if ``text`` ends with sentence-terminal punctuation."""
+    stripped = text.rstrip().rstrip(_CLOSING_WRAPPERS).rstrip()
+    return bool(stripped) and stripped[-1] in _TERMINAL_PUNCTUATION
+
+
+def _has_internal_terminator(text: str) -> bool:
+    return any(ch in text for ch in _TERMINAL_PUNCTUATION)
+
+
+def safe_trim_client_message(text: str, max_chars: int) -> str:
+    """Return a complete, client-safe message within ``max_chars``.
+
+    Guarantees:
+      * never cuts mid-sentence — trims only at sentence / line boundaries;
+      * an input that was truncated mid-sentence upstream (a dangling fragment,
+        e.g. "...Please note that once a") yields ``""`` so the caller can send a
+        safe fallback instead of a partial/incomplete answer;
+      * the returned text always ends with terminal punctuation.
+
+    Returns ``""`` when no complete, substantive message can be produced.
+    """
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return ""
+
+    # A short, single-clause message with no sentence punctuation (e.g. "Sounds
+    # good") is treated as complete — don't mangle legitimate brief staff replies.
+    if (
+        "\n" not in cleaned
+        and not _has_internal_terminator(cleaned)
+        and len(cleaned) <= 80
+    ):
+        return cleaned
+
+    # Truncated upstream: ends without terminal punctuation -> don't risk
+    # delivering a content-stripped remainder. Signal the caller to use a fallback.
+    if not _ends_completely(cleaned):
+        return ""
+
+    if len(cleaned) <= max_chars:
+        return cleaned
+
+    return _trim_complete_to_budget(cleaned, max_chars)
+
+
+def _trim_complete_to_budget(text: str, max_chars: int) -> str:
+    """Drop whole trailing sentences/lines until within budget (never mid-sentence)."""
+    out_lines: list[str] = []
     total = 0
     for line in text.split("\n"):
-        addition = len(line) + (1 if kept else 0)
-        if kept and total + addition > budget:
+        if not line.strip():
+            if out_lines:
+                out_lines.append("")
+                total += 1
+            continue
+        kept_sentences: list[str] = []
+        line_len = 0
+        for sentence in re.split(r"(?<=[.!?])\s+", line.strip()):
+            if not _ends_completely(sentence):
+                continue  # skip a dangling fragment within the line
+            addition = len(sentence) + (1 if kept_sentences else 0)
+            projected = total + line_len + addition + (1 if out_lines else 0)
+            if (kept_sentences or out_lines) and projected > max_chars:
+                break
+            kept_sentences.append(sentence)
+            line_len += addition
+        if not kept_sentences:
             break
-        kept.append(line)
-        total += addition
-    result = "\n".join(kept).strip()
-    if result:
-        return result
-    # A single opening line already exceeds the budget: trim by sentences.
-    first_line = text.split("\n", 1)[0]
-    accumulated = ""
-    for sentence in re.split(r"(?<=[.!?])\s+", first_line):
-        candidate = f"{accumulated} {sentence}".strip()
-        if accumulated and len(candidate) > budget:
-            break
-        accumulated = candidate
-    return (accumulated or first_line[:budget]).strip()
+        out_lines.append(" ".join(kept_sentences))
+        total += line_len + (1 if len(out_lines) > 1 else 0)
+    result = re.sub(r"\n{3,}", "\n\n", "\n".join(out_lines)).strip()
+    if not result or not _ends_completely(result):
+        return ""
+    return result
 
 
 def telegram_plain_text(text: str) -> str:

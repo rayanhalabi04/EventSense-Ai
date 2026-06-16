@@ -51,7 +51,7 @@ class OpenAIChatClient:
                 {"role": "user", "content": _user_prompt(request)},
             ],
             "temperature": 0.2,
-            "max_tokens": 350,
+            "max_tokens": 800,
         }
         async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
             response = await client.post(
@@ -93,7 +93,7 @@ class GeminiClient:
             ],
             "generationConfig": {
                 "temperature": 0.2,
-                "maxOutputTokens": 350,
+                "maxOutputTokens": 800,
             },
         }
         async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
@@ -168,6 +168,8 @@ def _system_prompt() -> str:
         "package questions, summarize only the main packages by name, price, and guest limit; do "
         "not list every add-on, overtime fee, or fine-print detail unless the client specifically "
         "asks for it. "
+        "Always write complete sentences and finish every sentence — never stop mid-sentence or "
+        "leave a dangling clause. End the message with proper punctuation. "
         "End the message with: \"A member of our team can help you choose the best option based on "
         "your event needs.\" "
         "Never mention drafts, internal notes, staff review, approval, or that the reply was sent "

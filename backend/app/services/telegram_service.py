@@ -235,7 +235,19 @@ class TelegramService:
             if existing is not None:
                 return existing
 
-        telegram_response = await self.send_message(conversation.external_conversation_id, text)
+        # Guarantee the client never receives a mid-sentence/incomplete message.
+        # Staff formatting keeps the full answer (no pricing summarization) but
+        # drops dangling fragments; if nothing complete survives, send a safe
+        # fallback instead. The delivered text is also what we persist.
+        from app.services.telegram_auto_reply_service import (
+            SAFE_CLIENT_FALLBACK,
+            staff_facing_telegram_text,
+        )
+
+        delivered = staff_facing_telegram_text(text) or SAFE_CLIENT_FALLBACK
+        telegram_response = await self.send_message(
+            conversation.external_conversation_id, delivered
+        )
         telegram_message_id = _sent_message_id(telegram_response)
         now = datetime.now(timezone.utc)
         conversation.updated_at = now
@@ -243,7 +255,7 @@ class TelegramService:
             tenant_id=ctx.tenant_id,
             conversation_id=conversation.id,
             direction=MessageDirection.outbound,
-            body=text,
+            body=delivered,
             source=TELEGRAM_SOURCE,
             external_message_id=telegram_message_id,
             sender_user_id=ctx.user_id,

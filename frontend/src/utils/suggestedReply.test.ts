@@ -73,6 +73,20 @@ describe('getSuggestedReplyCardState', () => {
     expect(getSuggestedReplyCardState(makeReply({ status: 'approved' })).kind).toBe('hidden')
     expect(getSuggestedReplyCardState(makeReply({ status: 'rejected' })).kind).toBe('hidden')
   })
+
+  it('an auto-sent reply is never pending (so no action card is shown)', () => {
+    const state = getSuggestedReplyCardState(
+      makeReply({ status: 'draft', auto_sent_at: '2026-06-15T10:05:00Z', sent_channel: 'telegram' }),
+    )
+    expect(state.kind).not.toBe('pending')
+  })
+
+  it('a manually generated draft (has author, not auto-sent) still renders the card', () => {
+    const state = getSuggestedReplyCardState(
+      makeReply({ status: 'draft', auto_sent_at: null, created_by_user_id: 'staff-1' }),
+    )
+    expect(state.kind).toBe('pending')
+  })
 })
 
 describe('isAutoReplyMessage', () => {

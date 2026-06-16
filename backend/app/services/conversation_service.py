@@ -7,7 +7,7 @@ from app.core.tenant_context import TenantContext
 from app.models.audit_log import AuditLog
 from app.models.conversation import Conversation
 from app.models.message import Message, MessageDirection
-from app.models.suggested_reply import SuggestedReply
+from app.models.suggested_reply import SuggestedReply, SuggestedReplyStatus
 from app.repositories.audit_log_repository import AuditLogRepository
 from app.repositories.conversation_repository import ConversationRepository
 from app.repositories.escalation_repository import EscalationRepository
@@ -27,6 +27,7 @@ from app.schemas.task import TaskRead
 from app.services.audit_log_service import (
     AUDIT_EVENT_CONVERSATION_DETAIL_VIEWED,
     AUDIT_EVENT_CONVERSATION_STATUS_CHANGED,
+    AUDIT_EVENT_TELEGRAM_AUTO_REPLY_SKIPPED,
     AuditLogService,
 )
 from app.services.rag_service import retrieve
@@ -147,6 +148,7 @@ class ConversationService:
             conversation.id,
             messages,
         )
+        auto_reply_skip_reason = _latest_auto_reply_skip_reason(latest_reply, audit_timeline)
         await self.session.commit()
 
         latest_message_response = (
@@ -190,6 +192,7 @@ class ConversationService:
             suggested_reply=(
                 SuggestedReplyRead.model_validate(latest_reply) if latest_reply is not None else None
             ),
+            auto_reply_skip_reason=auto_reply_skip_reason,
             rag_sources=rag_sources,
             tasks=[TaskRead.model_validate(task) for task in tasks],
             escalations=[EscalationRead.model_validate(escalation) for escalation in escalations],
@@ -283,6 +286,30 @@ class ConversationService:
             for audit_log in audit_logs
             if _audit_log_matches_conversation(audit_log, conversation_id_str, message_ids)
         ]
+
+
+def _latest_auto_reply_skip_reason(
+    latest_reply: SuggestedReply | None,
+    audit_timeline: list[AuditLog],
+) -> str | None:
+    """Reason the Telegram auto-reply was skipped, for the *current* pending draft.
+
+    Only surfaced when the latest suggested reply is a pending draft that was not
+    auto-sent (so a successful auto-send or human action never shows a stale skip
+    reason). ``audit_timeline`` is ordered oldest-first, so we scan from the end
+    to pick the most recent skip event.
+    """
+    if (
+        latest_reply is None
+        or latest_reply.auto_sent_at is not None
+        or latest_reply.status != SuggestedReplyStatus.draft
+    ):
+        return None
+    for audit_log in reversed(audit_timeline):
+        if audit_log.event_type == AUDIT_EVENT_TELEGRAM_AUTO_REPLY_SKIPPED:
+            reason = audit_log.details.get("reason")
+            return str(reason) if reason is not None else None
+    return None
 
 
 def _audit_log_matches_conversation(
