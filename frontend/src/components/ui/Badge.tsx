@@ -1,4 +1,4 @@
-import type { RiskLevel, TaskStatus, EscalationStatus, EscalationSeverity, TaskPriority } from '../../types'
+import type { RiskLevel, TaskStatus, EscalationStatus, TaskPriority } from '../../types'
 
 interface BadgeProps {
   children: React.ReactNode
@@ -43,12 +43,6 @@ const ESCALATION_STATUS_MAP: Record<EscalationStatus, { label: string; variant: 
   dismissed: { label: 'Dismissed', variant: 'neutral' },
 }
 
-const SEVERITY_MAP: Record<EscalationSeverity, { label: string; variant: BadgeProps['variant'] }> = {
-  medium: { label: 'Medium', variant: 'warning' },
-  high: { label: 'High', variant: 'danger' },
-  critical: { label: 'Critical', variant: 'danger' },
-}
-
 type BadgeValue = string | null | undefined
 type BadgeConfig = { label: string; variant: BadgeProps['variant'] }
 
@@ -90,10 +84,5 @@ export function PriorityBadge({ priority }: { priority?: BadgeValue }) {
 
 export function EscalationStatusBadge({ status }: { status?: BadgeValue }) {
   const { label, variant } = getBadgeConfig(status, ESCALATION_STATUS_MAP)
-  return <Badge variant={variant}>{label}</Badge>
-}
-
-export function SeverityBadge({ severity }: { severity?: BadgeValue }) {
-  const { label, variant } = getBadgeConfig(severity, SEVERITY_MAP)
   return <Badge variant={variant}>{label}</Badge>
 }
