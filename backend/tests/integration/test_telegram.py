@@ -14,6 +14,7 @@ from app.models.tenant import Tenant
 from app.services.audit_log_service import (
     AUDIT_EVENT_ESCALATION_CREATED,
     AUDIT_EVENT_SUGGESTED_REPLY_APPROVED,
+    AUDIT_EVENT_SUGGESTED_REPLY_REFUSED_NO_SOURCE,
     AUDIT_EVENT_TELEGRAM_AUTO_REPLY_SENT,
     AUDIT_EVENT_TELEGRAM_AUTO_REPLY_SKIPPED,
     AUDIT_EVENT_TELEGRAM_REPLY_SENT,
@@ -21,6 +22,7 @@ from app.services.audit_log_service import (
 from app.services.inbound_message_processing_service import (
     InboundMessageProcessingService,
 )
+from app.services.conversation_memory_service import ConversationMemoryMessage
 from app.services.intent_classifier_service import IntentClassification
 from app.models.suggested_reply import SuggestedReplyStatus
 from app.services.telegram_auto_reply_service import (
@@ -58,6 +60,23 @@ async def login(
     )
     assert response.status_code == 200
     return response.json()["access_token"]
+
+
+async def create_document(
+    client: AsyncClient,
+    token: str,
+    *,
+    title: str,
+    document_type: str,
+    content_text: str,
+) -> dict[str, object]:
+    response = await client.post(
+        "/api/v1/documents",
+        headers=auth_headers(token),
+        json={"title": title, "document_type": document_type, "content_text": content_text},
+    )
+    assert response.status_code == 201, response.text
+    return response.json()
 
 
 @pytest.fixture(autouse=True)
@@ -126,6 +145,36 @@ def fail_on_telegram_send(monkeypatch: pytest.MonkeyPatch) -> None:
         raise AssertionError("auto-reply should not send to Telegram")
 
     monkeypatch.setattr("app.services.telegram_service.TelegramService.send_message", fail_send_message)
+
+
+class ScopedFakeMemoryService:
+    store: dict[tuple[str, str], list[ConversationMemoryMessage]] = {}
+
+    async def store_inbound_message(self, *, tenant_id, message):
+        key = (str(tenant_id), str(message.conversation_id))
+        self.store.setdefault(key, []).append(
+            ConversationMemoryMessage(
+                message_id=str(message.id),
+                direction=message.direction.value,
+                body=message.body,
+                sent_at=message.sent_at.isoformat(),
+            )
+        )
+
+    async def load_recent(self, *, tenant_id, conversation_id):
+        return list(self.store.get((str(tenant_id), str(conversation_id)), []))
+
+
+def install_scoped_fake_memory(monkeypatch: pytest.MonkeyPatch) -> None:
+    ScopedFakeMemoryService.store = {}
+    monkeypatch.setattr(
+        "app.services.telegram_service.ConversationMemoryService",
+        ScopedFakeMemoryService,
+    )
+    monkeypatch.setattr(
+        "app.services.suggested_reply_service.ConversationMemoryService",
+        ScopedFakeMemoryService,
+    )
 
 
 async def fake_supported_suggested_reply(session, tenant_id, user_id, conversation, message, **kwargs):
@@ -1080,6 +1129,124 @@ async def test_risky_intents_do_not_auto_send_and_escalate(
     assert escalations[0].intent_label == label
 
 
+async def test_payment_deposit_confirmation_gets_verification_draft_not_refund_policy(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    enable_auto_reply(monkeypatch)
+    fail_on_telegram_send(monkeypatch)
+    token = await login(client)
+    await create_document(
+        client,
+        token,
+        title="Elegant Deposit Policy",
+        document_type="deposit_policy",
+        content_text="The booking deposit is non-refundable after booking confirmation.",
+    )
+
+    response = await post_telegram_update(
+        client,
+        telegram_update(
+            chat_id=1911,
+            message_id=211,
+            text=(
+                "I paid the deposit yesterday but nobody confirmed it. Can someone "
+                "check the payment and update me?"
+            ),
+        ),
+    )
+
+    assert response.status_code == 200
+    conversation_id = UUID(response.json()["conversation_id"])
+    message = await db_session.get(Message, UUID(response.json()["message_id"]))
+    assert message is not None
+    assert message.intent_label == "payment_issue"
+    assert message.risk_level in {"medium", "high"}
+
+    reply = (
+        await db_session.execute(
+            select(SuggestedReply).where(SuggestedReply.conversation_id == conversation_id)
+        )
+    ).scalar_one()
+    text = reply.suggested_text.lower()
+    assert "non-refundable" not in text
+    assert "cancellation" not in text
+    assert "verify" in text or "verification" in text
+    assert "deposit" in text or "payment" in text
+    assert "team" in text or "staff" in text
+    assert reply.source_document_ids == []
+    assert reply.rag_sources == []
+    assert reply.auto_sent_at is None
+
+    escalations = await escalations_for_conversation(db_session, conversation_id)
+    assert len(escalations) == 1
+    assert escalations[0].intent_label == "payment_issue"
+    skipped = await latest_auto_reply_audits(db_session, AUDIT_EVENT_TELEGRAM_AUTO_REPLY_SKIPPED)
+    assert len(skipped) == 1
+    assert skipped[0].details["suggested_reply_id"] == str(reply.id)
+    refused_events = (
+        await db_session.execute(
+            select(AuditLog).where(AuditLog.event_type == AUDIT_EVENT_SUGGESTED_REPLY_REFUSED_NO_SOURCE)
+        )
+    ).scalars().all()
+    assert any(event.resource_id == str(reply.id) for event in refused_events)
+
+
+async def test_cancellation_deposit_refund_still_uses_cancellation_policy(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    enable_auto_reply(monkeypatch)
+    fail_on_telegram_send(monkeypatch)
+    token = await login(client)
+    await create_document(
+        client,
+        token,
+        title="Elegant Cancellation Policy",
+        document_type="cancellation_policy",
+        content_text=(
+            "Cancellation policy for clients who want to cancel the booking: after "
+            "booking confirmation, the booking deposit is non-refundable. If a "
+            "client asks whether the deposit is refundable, staff should explain "
+            "that the event date and planning team are reserved."
+        ),
+    )
+
+    response = await post_telegram_update(
+        client,
+        telegram_update(
+            chat_id=1912,
+            message_id=212,
+            text="I want to cancel the booking. Is my deposit refundable?",
+        ),
+    )
+
+    assert response.status_code == 200
+    conversation_id = UUID(response.json()["conversation_id"])
+    message = await db_session.get(Message, UUID(response.json()["message_id"]))
+    assert message is not None
+    assert message.intent_label == "cancellation_request"
+    assert message.risk_level == "high"
+
+    reply = (
+        await db_session.execute(
+            select(SuggestedReply).where(SuggestedReply.conversation_id == conversation_id)
+        )
+    ).scalar_one()
+    text = reply.suggested_text.lower()
+    assert reply.answer_supported is True
+    assert "non-refundable" in text
+    assert "deposit" in text
+    assert reply.rag_sources
+    assert reply.rag_sources[0]["document_type"] == "cancellation_policy"
+
+    escalations = await escalations_for_conversation(db_session, conversation_id)
+    assert len(escalations) == 1
+    assert escalations[0].intent_label == "cancellation_request"
+
+
 async def test_cross_tenant_reference_is_refused_and_not_auto_sent(
     client: AsyncClient,
     db_session: AsyncSession,
@@ -1605,6 +1772,161 @@ async def test_existing_conversation_followup_low_risk_also_auto_sends(
     assert len(sent) == 2
     sent_audits = await latest_auto_reply_audits(db_session, AUDIT_EVENT_TELEGRAM_AUTO_REPLY_SENT)
     assert len(sent_audits) == 2
+
+
+async def test_telegram_followup_uses_same_conversation_memory_for_rag(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    enable_auto_reply(monkeypatch)
+    install_scoped_fake_memory(monkeypatch)
+    token = await login(client)
+    await create_document(
+        client,
+        token,
+        title="Guest Count Package Pricing",
+        document_type="pricing",
+        content_text=(
+            "Adding 30 more guests to the wedding package may require a revised "
+            "package rate and catering or seating arrangements. Our team confirms "
+            "the updated guest count before quoting the revised rate."
+        ),
+    )
+    sent: list[str] = []
+
+    async def fake_send_message(self, chat_id: str, text: str):
+        sent.append(text)
+        return {"ok": True, "result": {"message_id": 8800 + len(sent)}}
+
+    monkeypatch.setattr("app.services.telegram_service.TelegramService.send_message", fake_send_message)
+
+    force_intent(monkeypatch, "guest_count_change", 0.95)
+    first = await post_telegram_update(
+        client,
+        telegram_update(
+            chat_id=3001,
+            message_id=3001,
+            text="Can we add 30 more guests to our wedding package?",
+        ),
+    )
+    assert first.status_code == 200
+
+    force_intent(monkeypatch, "pricing_request", 0.95)
+    second = await post_telegram_update(
+        client,
+        telegram_update(
+            chat_id=3001,
+            message_id=3002,
+            text="Will that change the price?",
+        ),
+    )
+
+    assert second.status_code == 200
+    assert second.json()["is_new_conversation"] is False
+    assert second.json()["conversation_id"] == first.json()["conversation_id"]
+    assert len(sent) == 1
+
+    reply = (
+        await db_session.execute(
+            select(SuggestedReply).where(
+                SuggestedReply.message_id == UUID(second.json()["message_id"])
+            )
+        )
+    ).scalar_one()
+    text = reply.suggested_text.lower()
+    assert reply.answer_supported is True
+    assert "could not find enough information" not in text
+    assert "guest" in text
+    assert "package" in text
+    assert "rate" in text or "price" in text
+    assert "adding 30 more guests" in reply.rag_sources[0]["content"].lower()
+
+    generated_event = (
+        await db_session.execute(
+            select(AuditLog).where(AuditLog.resource_id == str(reply.id))
+        )
+    ).scalars().all()
+    assert any(
+        "adding 30 more guests to our wedding package"
+        in str(event.details.get("rag_query", "")).lower()
+        for event in generated_event
+    )
+
+
+async def test_telegram_followup_does_not_borrow_memory_from_other_chat(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    enable_auto_reply(monkeypatch)
+    install_scoped_fake_memory(monkeypatch)
+    token = await login(client)
+    await create_document(
+        client,
+        token,
+        title="Guest Count Package Pricing",
+        document_type="pricing",
+        content_text=(
+            "Adding 30 more guests to the wedding package may require a revised "
+            "package rate and catering or seating arrangements. Our team confirms "
+            "the updated guest count before quoting the revised rate."
+        ),
+    )
+    sent: list[str] = []
+
+    async def fake_send_message(self, chat_id: str, text: str):
+        sent.append(text)
+        return {"ok": True, "result": {"message_id": 8900 + len(sent)}}
+
+    monkeypatch.setattr("app.services.telegram_service.TelegramService.send_message", fake_send_message)
+
+    force_intent(monkeypatch, "guest_count_change", 0.95)
+    first = await post_telegram_update(
+        client,
+        telegram_update(
+            chat_id=3003,
+            message_id=3003,
+            text="Can we add 30 more guests to our wedding package?",
+        ),
+    )
+    assert first.status_code == 200
+
+    force_intent(monkeypatch, "pricing_request", 0.95)
+    unrelated = await post_telegram_update(
+        client,
+        telegram_update(
+            chat_id=3004,
+            message_id=3004,
+            text="Will that change the price?",
+        ),
+    )
+
+    assert unrelated.status_code == 200
+    assert unrelated.json()["is_new_conversation"] is True
+    assert unrelated.json()["conversation_id"] != first.json()["conversation_id"]
+
+    reply = (
+        await db_session.execute(
+            select(SuggestedReply).where(
+                SuggestedReply.message_id == UUID(unrelated.json()["message_id"])
+            )
+        )
+    ).scalar_one()
+
+    events = (
+        await db_session.execute(
+            select(AuditLog).where(AuditLog.resource_id == str(reply.id))
+        )
+    ).scalars().all()
+    assert any(
+        event.details.get("rag_query") == "Will that change the price?"
+        for event in events
+    )
+    assert all(
+        "30 more guests" not in str(event.details.get("rag_query", "")).lower()
+        for event in events
+    )
 
 
 async def test_detail_exposes_auto_reply_skip_reason_for_pending_draft(

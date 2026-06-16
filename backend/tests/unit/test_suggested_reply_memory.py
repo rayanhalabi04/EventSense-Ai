@@ -4,10 +4,58 @@ import pytest
 
 from app.services.llm_service import FakeLLMClient, _user_prompt
 from app.services.rag_service import RagResult, RagSource
-from app.services.suggested_reply_service import generate_reply_text_with_optional_llm
+from app.services.conversation_memory_service import ConversationMemoryMessage
+from app.services.suggested_reply_service import (
+    build_contextual_rag_query,
+    generate_reply_text_with_optional_llm,
+)
 
 
 pytestmark = pytest.mark.asyncio
+
+
+async def test_contextual_rag_query_rewrites_price_followup_from_recent_memory() -> None:
+    memory = [
+        ConversationMemoryMessage(
+            message_id=str(uuid4()),
+            direction="inbound",
+            body="Can we add 30 more guests to our wedding package?",
+            sent_at="2026-06-16T10:00:00+00:00",
+        ),
+        ConversationMemoryMessage(
+            message_id="current",
+            direction="inbound",
+            body="Will that change the price?",
+            sent_at="2026-06-16T10:01:00+00:00",
+        ),
+    ]
+
+    query = build_contextual_rag_query(
+        "Will that change the price?",
+        memory,
+        current_message_id="current",
+    )
+
+    assert query == "Will adding 30 more guests to our wedding package change the price?"
+
+
+async def test_contextual_rag_query_does_not_rewrite_without_prior_context() -> None:
+    memory = [
+        ConversationMemoryMessage(
+            message_id="current",
+            direction="inbound",
+            body="Will that change the price?",
+            sent_at="2026-06-16T10:01:00+00:00",
+        )
+    ]
+
+    query = build_contextual_rag_query(
+        "Will that change the price?",
+        memory,
+        current_message_id="current",
+    )
+
+    assert query == "Will that change the price?"
 
 
 async def test_memory_is_passed_to_llm_request_and_prompt() -> None:

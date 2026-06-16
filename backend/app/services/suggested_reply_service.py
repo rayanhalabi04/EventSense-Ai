@@ -12,7 +12,7 @@ fully reproducible. A hosted-LLM generator can be added later behind
 """
 import re
 from dataclasses import dataclass
-from typing import Callable
+from typing import Callable, Sequence
 from uuid import UUID
 
 from fastapi import HTTPException, status
@@ -42,7 +42,10 @@ from app.services.guardrail_service import (
 )
 from app.services.llm_service import LLMClient, LLMReplyRequest, get_llm_client
 from app.schemas.suggested_reply import SuggestedReplyUpdate
-from app.services.conversation_memory_service import ConversationMemoryService
+from app.services.conversation_memory_service import (
+    ConversationMemoryMessage,
+    ConversationMemoryService,
+)
 from app.services.rag_service import RagResult, retrieve
 
 
@@ -64,6 +67,11 @@ ESCALATION_SENTENCE = (
     "If you would like us to review a special case, I can escalate this to a "
     "manager for review."
 )
+PAYMENT_VERIFICATION_REPLY = (
+    "Hi, thank you for your message. We'll ask our team to verify your "
+    "deposit/payment confirmation and update you shortly."
+)
+PAYMENT_VERIFICATION_REFUSAL_REASON = "Payment confirmation requires staff verification."
 
 _ESCALATION_KEYWORDS = (
     "cancel",
@@ -74,6 +82,36 @@ _ESCALATION_KEYWORDS = (
     "dispute",
     "complaint",
     "lawyer",
+)
+
+_PAYMENT_VERIFICATION_TERMS = (
+    "paid",
+    "payment",
+    "deposit",
+    "invoice",
+    "receipt",
+    "confirmed",
+    "confirmation",
+    "check",
+    "verify",
+    "update",
+)
+
+_REFUND_OR_CANCELLATION_TERMS = (
+    "cancel",
+    "cancellation",
+    "refund",
+    "refundable",
+    "non-refundable",
+)
+
+_FOLLOWUP_REFERENCE_PATTERN = re.compile(
+    r"\b(that|this|it)\b|\bthe\s+change\b|\bchange\s+the\s+price\b",
+    re.IGNORECASE,
+)
+_REFERENCE_REPLACEMENTS = (
+    re.compile(r"\bthe\s+change\b", re.IGNORECASE),
+    re.compile(r"\b(that|this|it)\b", re.IGNORECASE),
 )
 
 
@@ -362,6 +400,86 @@ def generate_reply_text(
     )
 
 
+def _is_payment_verification_request(message_body: str, intent_label: str | None) -> bool:
+    if intent_label != "payment_issue":
+        return False
+    normalized = message_body.lower()
+    if any(term in normalized for term in _REFUND_OR_CANCELLATION_TERMS):
+        return False
+    return any(term in normalized for term in _PAYMENT_VERIFICATION_TERMS)
+
+
+def build_contextual_rag_query(
+    message_body: str,
+    memory_messages: Sequence[ConversationMemoryMessage],
+    *,
+    current_message_id: str | None = None,
+) -> str:
+    """Resolve small follow-up references for retrieval only.
+
+    The returned text is used as the RAG query; the raw client message remains
+    the message shown to staff and passed to the reply generator. Memory is
+    already tenant- and conversation-scoped by ``ConversationMemoryService``.
+    """
+    message_body = message_body.strip()
+    if not message_body or not _FOLLOWUP_REFERENCE_PATTERN.search(message_body):
+        return message_body
+
+    antecedent = _latest_prior_inbound_memory(
+        memory_messages,
+        current_message_id=current_message_id,
+    )
+    if antecedent is None:
+        return message_body
+
+    phrase = _antecedent_phrase(antecedent.body)
+    if phrase is None:
+        return f"{message_body} Previous client message: {antecedent.body.strip()}"
+
+    rewritten = message_body
+    for pattern in _REFERENCE_REPLACEMENTS:
+        rewritten = pattern.sub(phrase, rewritten, count=1)
+        if rewritten != message_body:
+            return rewritten
+    return f"{message_body} Previous client message: {antecedent.body.strip()}"
+
+
+def _latest_prior_inbound_memory(
+    memory_messages: Sequence[ConversationMemoryMessage],
+    *,
+    current_message_id: str | None,
+) -> ConversationMemoryMessage | None:
+    for item in reversed(memory_messages):
+        if item.direction != "inbound":
+            continue
+        if current_message_id is not None and item.message_id == current_message_id:
+            continue
+        body = item.body.strip()
+        if not body or _FOLLOWUP_REFERENCE_PATTERN.fullmatch(body):
+            continue
+        return item
+    return None
+
+
+def _antecedent_phrase(text: str) -> str | None:
+    cleaned = re.sub(r"\s+", " ", text.strip()).rstrip("?.!")
+    if not cleaned:
+        return None
+
+    add_patterns = (
+        r"^(?:can|could|may|would)\s+(?:we|i)\s+add\s+(.+)$",
+        r"^is\s+it\s+possible\s+to\s+add\s+(.+)$",
+        r"^(?:we|i)\s+(?:want|would\s+like|need)\s+to\s+add\s+(.+)$",
+        r"^add\s+(.+)$",
+    )
+    for pattern in add_patterns:
+        match = re.match(pattern, cleaned, flags=re.IGNORECASE)
+        if match:
+            return f"adding {match.group(1).strip()}"
+
+    return None
+
+
 async def generate_reply_text_with_optional_llm(
     *,
     rag_result: RagResult,
@@ -448,6 +566,7 @@ async def generate_suggested_reply(
     tenant_slug = await TenantRepository(session).get_slug(tenant_id)
     guardrail_events: list[tuple[str, GuardrailResult]] = []
     memory_messages = []
+    rag_query_audit: str | None = None
 
     input_result = check_input_guardrails(message.body, tenant_slug)
     if input_result.flags:
@@ -462,23 +581,42 @@ async def generate_suggested_reply(
             rag_sources=[],
             generation_method=GENERATION_METHOD_TEMPLATE,
         )
+    elif _is_payment_verification_request(
+        input_result.sanitized_text or message.body,
+        message.intent_label,
+    ):
+        generated = GeneratedReply(
+            suggested_text=PAYMENT_VERIFICATION_REPLY,
+            answer_supported=False,
+            refusal_reason=PAYMENT_VERIFICATION_REFUSAL_REASON,
+            source_document_ids=[],
+            rag_sources=[],
+            generation_method=GENERATION_METHOD_TEMPLATE,
+        )
     else:
+        memory_messages = await ConversationMemoryService().load_recent(
+            tenant_id=tenant_id,
+            conversation_id=conversation.id,
+        )
+        message_body = input_result.sanitized_text or message.body
+        rag_query = build_contextual_rag_query(
+            message_body,
+            memory_messages,
+            current_message_id=str(message.id),
+        )
         rag_result = await retrieve(
             session,
-            query=input_result.sanitized_text or message.body,
+            query=rag_query,
             tenant_id=tenant_id,
             top_k=5,
             actor_user_id=user_id,
             audit=False,
             enforce_guardrails=False,
         )
-        memory_messages = await ConversationMemoryService().load_recent(
-            tenant_id=tenant_id,
-            conversation_id=conversation.id,
-        )
+        rag_query_audit = rag_result.query
         generated = await generate_reply_text_with_optional_llm(
             rag_result=rag_result,
-            message_body=input_result.sanitized_text or message.body,
+            message_body=message_body,
             intent_label=message.intent_label,
             risk_level=message.risk_level,
             risk_reason=message.risk_reason,
@@ -561,6 +699,7 @@ async def generate_suggested_reply(
         "generation_method": generated.generation_method,
         "llm_fallback_reason": generated.fallback_reason,
         "memory_message_count": len(memory_messages),
+        "rag_query": rag_query_audit,
         "source_document_ids": generated.source_document_ids,
         "source_document_titles": source_titles,
         "user_id": user_id,

@@ -73,9 +73,17 @@ def route_document_types(query: str) -> list[DocumentType] | None:
     text = query.lower()
     if any(word in text for word in ("price", "pricing", "package", "cost", "rate", "inclusion")):
         return [DocumentType.pricing, DocumentType.package]
+    if any(word in text for word in ("cancel", "cancellation")):
+        if any(word in text for word in ("deposit", "payment", "paid", "pay", "installment")):
+            return [
+                DocumentType.cancellation_policy,
+                DocumentType.deposit_policy,
+                DocumentType.contract_terms,
+            ]
+        return [DocumentType.cancellation_policy, DocumentType.contract_terms]
     if any(word in text for word in ("deposit", "payment", "paid", "pay", "installment")):
         return [DocumentType.deposit_policy, DocumentType.contract_terms]
-    if any(word in text for word in ("cancel", "cancellation", "refund", "refundable")):
+    if any(word in text for word in ("refund", "refundable")):
         return [DocumentType.cancellation_policy, DocumentType.contract_terms]
     if any(word in text for word in ("service", "include", "offer", "provide", "faq")):
         return [DocumentType.service_description, DocumentType.faq]
