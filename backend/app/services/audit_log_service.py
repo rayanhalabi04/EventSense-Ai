@@ -6,6 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.audit_log import AuditLog
+from app.services.guardrail_service import redact_pii
 
 
 AUDIT_EVENT_AUTH_LOGIN_SUCCESS = "auth.login_success"
@@ -72,6 +73,8 @@ def _json_safe(value: object) -> object:
         return {str(key): _json_safe(item) for key, item in value.items()}
     if isinstance(value, list | tuple | set):
         return [_json_safe(item) for item in value]
+    if isinstance(value, str):
+        return redact_pii(value)
     return value
 
 

@@ -449,7 +449,9 @@ async def test_rag_endpoint_audits_pii_redaction(
         )
     ).scalars().all()
     assert events
-    assert events[-1].details["sanitized_text"] == "My email is <EMAIL>. Is the deposit refundable?"
+    assert events[-1].details["sanitized_text"] == (
+        "My email is [REDACTED_EMAIL]. Is the deposit refundable?"
+    )
 
 
 async def test_conversation_detail_returns_rag_sources_if_available(client: AsyncClient):

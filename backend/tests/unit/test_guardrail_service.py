@@ -3,6 +3,8 @@ from app.services.guardrail_service import (
     FLAG_PII_DETECTED,
     FLAG_PROMPT_INJECTION,
     FLAG_SYSTEM_PROMPT_REQUEST,
+    REDACTED_EMAIL,
+    REDACTED_PHONE,
     check_input_guardrails,
     sanitize_text,
 )
@@ -36,7 +38,29 @@ def test_cross_tenant_request_detected_for_elegant_user():
 def test_pii_redaction_handles_email_and_lebanese_phone():
     redacted, flags = sanitize_text("My email is maya@example.com and phone is +96170111222")
 
-    assert redacted == "My email is <EMAIL> and phone is <PHONE>"
+    assert redacted == f"My email is {REDACTED_EMAIL} and phone is {REDACTED_PHONE}"
+    assert flags == [FLAG_PII_DETECTED]
+
+
+def test_pii_redaction_handles_spaced_phone_without_redacting_event_numbers():
+    redacted, flags = sanitize_text(
+        "My number is +961 70 123 456 for a 150 guest event on August 24 costing $6,800."
+    )
+
+    assert "+961 70 123 456" not in redacted
+    assert REDACTED_PHONE in redacted
+    assert "150 guest" in redacted
+    assert "August 24" in redacted
+    assert "$6,800" in redacted
+    assert flags == [FLAG_PII_DETECTED]
+
+
+def test_pii_redaction_handles_local_mobile_without_redacting_guest_counts():
+    redacted, flags = sanitize_text("My number is 70123456 and we may add 40 extra guests.")
+
+    assert "70123456" not in redacted
+    assert REDACTED_PHONE in redacted
+    assert "40 extra guests" in redacted
     assert flags == [FLAG_PII_DETECTED]
 
 

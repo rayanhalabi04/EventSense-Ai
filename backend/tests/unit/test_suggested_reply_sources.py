@@ -177,3 +177,70 @@ def test_single_source_grounded_reply_is_unchanged() -> None:
     assert generated.source_document_ids == [str(document_id)]
     assert len(generated.rag_sources) == 1
     assert "non-refundable after booking confirmation" in generated.suggested_text.lower()
+
+
+def test_faq_question_heading_is_not_exposed_in_guest_count_reply() -> None:
+    document_id = uuid4()
+    rag_result = RagResult(
+        query="Can someone confirm if venue and catering can handle extra guests?",
+        answer_supported=True,
+        sources=[
+            _source(
+                document_id=document_id,
+                title="Faq",
+                document_type="faq",
+                content=(
+                    "Q: Can I change my guest count after booking? A: Guest count "
+                    "changes usually need to be confirmed at least 10 days before "
+                    "the event."
+                ),
+                score=0.92,
+            )
+        ],
+    )
+
+    generated = generate_reply_text(
+        rag_result=rag_result,
+        message_body="Can someone confirm if venue and catering can handle extra guests?",
+        risk_level="medium",
+    )
+
+    assert generated.answer_supported is True
+    assert "guest count changes usually need to be confirmed" in generated.suggested_text.lower()
+    assert "according to our" not in generated.suggested_text.lower()
+    assert "faq:" not in generated.suggested_text.lower()
+    assert "q: can i" not in generated.suggested_text.lower()
+    assert "a:" not in generated.suggested_text.lower()
+
+
+def test_package_reply_uses_source_content_without_document_label() -> None:
+    document_id = uuid4()
+    rag_result = RagResult(
+        query="What does the premium package include?",
+        answer_supported=True,
+        sources=[
+            _source(
+                document_id=document_id,
+                title="Wedding Package FAQ",
+                document_type="package",
+                content=(
+                    "Q: What does the Premium Package include? A: Our Premium "
+                    "Package includes venue decoration, catering coordination, "
+                    "and photography coordination."
+                ),
+                score=0.91,
+            )
+        ],
+    )
+
+    generated = generate_reply_text(
+        rag_result=rag_result,
+        message_body="Hi, can you send me your wedding package prices for 150 guests?",
+        risk_level="low",
+    )
+
+    assert generated.answer_supported is True
+    assert "premium package includes venue decoration" in generated.suggested_text.lower()
+    assert "based on our" not in generated.suggested_text.lower()
+    assert "wedding package faq:" not in generated.suggested_text.lower()
+    assert "q:" not in generated.suggested_text.lower()

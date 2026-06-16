@@ -104,3 +104,63 @@ async def test_memory_is_passed_to_llm_request_and_prompt() -> None:
     prompt = _user_prompt(fake.requests[0])
     assert "Recent conversation memory:" in prompt
     assert "Earlier I asked about the outdoor venue." in prompt
+
+
+async def test_llm_request_and_prompt_redact_pii_from_message_memory_and_sources() -> None:
+    document_id = uuid4()
+    fake = FakeLLMClient("Thank you. A member of our team will follow up.")
+    rag_result = RagResult(
+        query="Please contact me",
+        answer_supported=True,
+        sources=[
+            RagSource(
+                document_id=document_id,
+                document_title="Booking Contact Policy",
+                document_type="service_question",
+                content=(
+                    "A team member may follow up about bookings. Internal contact "
+                    "billing@example.com or +96170111222."
+                ),
+                score=0.9,
+                chunk_index=0,
+                metadata={},
+            )
+        ],
+    )
+    memory = [
+        {
+            "message_id": str(uuid4()),
+            "direction": "inbound",
+            "body": "My email is rayan@example.com and my number is +961 70 123 456.",
+            "sent_at": "2026-06-11T10:00:00+00:00",
+        }
+    ]
+
+    await generate_reply_text_with_optional_llm(
+        rag_result=rag_result,
+        message_body="Please contact me at rayan@example.com or +96170123456.",
+        intent_label="booking_inquiry",
+        risk_level="low",
+        risk_reason="client shared +96170123456",
+        tenant_slug="elegant-weddings",
+        conversation_memory=memory,
+        llm_client_factory=lambda: fake,
+    )
+
+    assert len(fake.requests) == 1
+    request = fake.requests[0]
+    prompt = _user_prompt(request)
+    for raw in (
+        "rayan@example.com",
+        "+96170123456",
+        "+961 70 123 456",
+        "billing@example.com",
+        "+96170111222",
+    ):
+        assert raw not in request.client_message
+        assert raw not in prompt
+    assert "[REDACTED_EMAIL]" in prompt
+    assert "[REDACTED_PHONE]" in prompt
+    assert request.conversation_memory[0]["body"] == (
+        "My email is [REDACTED_EMAIL] and my number is [REDACTED_PHONE]."
+    )

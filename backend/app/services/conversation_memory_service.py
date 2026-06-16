@@ -10,6 +10,7 @@ from uuid import UUID
 
 from app.core.config import settings
 from app.models.message import Message, MessageDirection
+from app.services.guardrail_service import redact_pii
 
 
 logger = logging.getLogger(__name__)
@@ -188,4 +189,4 @@ def _redact_sensitive_text(text: str) -> str:
     redacted = text
     redacted = _SECRET_PATTERNS[0].sub(lambda match: f"{match.group(1)}=<REDACTED>", redacted)
     redacted = _SECRET_PATTERNS[1].sub("Bearer <REDACTED>", redacted)
-    return redacted
+    return redact_pii(redacted)

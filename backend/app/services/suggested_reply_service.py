@@ -39,6 +39,8 @@ from app.services.guardrail_service import (
     audit_guardrail_event,
     check_input_guardrails,
     check_output_guardrails,
+    check_retrieval_guardrails,
+    redact_pii,
 )
 from app.services.llm_service import LLMClient, LLMReplyRequest, get_llm_client
 from app.schemas.suggested_reply import SuggestedReplyUpdate
@@ -72,6 +74,12 @@ PAYMENT_VERIFICATION_REPLY = (
     "deposit/payment confirmation and update you shortly."
 )
 PAYMENT_VERIFICATION_REFUSAL_REASON = "Payment confirmation requires staff verification."
+CONTACT_FOLLOWUP_REPLY = (
+    "Thank you. I'll ask a team member to contact you about your booking."
+)
+CONTACT_FOLLOWUP_REFUSAL_REASON = "Contact requests require staff follow-up."
+GUEST_COUNT_REVIEW_REFUSAL_REASON = "Guest count/capacity changes require staff review."
+HIGH_RISK_REVIEW_REFUSAL_REASON = "High-risk complaint or human escalation requires staff review."
 
 _ESCALATION_KEYWORDS = (
     "cancel",
@@ -113,8 +121,44 @@ _REFERENCE_REPLACEMENTS = (
     re.compile(r"\bthe\s+change\b", re.IGNORECASE),
     re.compile(r"\b(that|this|it)\b", re.IGNORECASE),
 )
-
-
+_GUEST_COUNT_OPERATIONAL_PATTERNS = (
+    re.compile(r"\bextra\s+guests?\b", re.IGNORECASE),
+    re.compile(r"\badditional\s+guests?\b", re.IGNORECASE),
+    re.compile(r"\bmore\s+guests?\b", re.IGNORECASE),
+    re.compile(r"\badd(?:ing)?\s+\d+\s+(?:more\s+|additional\s+|extra\s+)?guests?\b", re.IGNORECASE),
+    re.compile(r"\badd(?:ing)?\s+(?:more\s+|additional\s+|extra\s+)?guests?\b", re.IGNORECASE),
+    re.compile(r"\bincrease\s+(?:the\s+)?(?:guest\s+count|guests?)\b", re.IGNORECASE),
+    re.compile(r"\bguest\s+count\b", re.IGNORECASE),
+    re.compile(r"\bheadcount\b", re.IGNORECASE),
+    re.compile(r"\b(?:venue|catering|seating)\s+capacity\b", re.IGNORECASE),
+    re.compile(r"\bcapacity\s+for\s+\d+\s+guests?\b", re.IGNORECASE),
+    re.compile(r"\bhandle\s+\d+\s+(?:more\s+|additional\s+|extra\s+)?guests?\b", re.IGNORECASE),
+)
+_COMPLAINT_TERMS = (
+    "complaint",
+    "complain",
+    "unhappy",
+    "upset",
+    "disappointed",
+    "bad service",
+    "unacceptable",
+    "wrong",
+)
+_HUMAN_ESCALATION_TERMS = (
+    "manager",
+    "supervisor",
+    "human",
+    "person",
+    "agent",
+)
+_CONTACT_FOLLOWUP_PATTERNS = (
+    re.compile(r"\bcontact\s+me\b", re.IGNORECASE),
+    re.compile(r"\bhave\s+someone\s+contact\s+me\b", re.IGNORECASE),
+    re.compile(r"\bsomeone\s+contact\s+me\b", re.IGNORECASE),
+    re.compile(r"\bcall\s+me\b", re.IGNORECASE),
+    re.compile(r"\breach\s+(?:out\s+)?to\s+me\b", re.IGNORECASE),
+    re.compile(r"\bget\s+in\s+touch\s+with\s+me\b", re.IGNORECASE),
+)
 @dataclass(frozen=True)
 class GeneratedReply:
     suggested_text: str
@@ -224,6 +268,31 @@ def _first_sentence_containing(text: str, keywords: tuple[str, ...]) -> str | No
     return None
 
 
+def _clean_source_sentence(sentence: str) -> str:
+    cleaned = re.sub(r"\s+", " ", sentence.strip())
+    cleaned = re.sub(r"(?i)^(?:faq\s*:\s*)?(?:q|a)\s*:\s*", "", cleaned)
+    cleaned = re.sub(r"(?i)\b(?:q|a)\s*:\s*", "", cleaned)
+    return cleaned.strip()
+
+
+def _first_natural_source_sentence(
+    text: str,
+    keywords: tuple[str, ...],
+    *,
+    allow_questions: bool = False,
+) -> str | None:
+    for raw in re.split(r"(?<=[.!?])\s+", text.replace("\n", " ")):
+        candidate = _clean_source_sentence(raw)
+        if not candidate:
+            continue
+        if not allow_questions and candidate.endswith("?"):
+            continue
+        low = candidate.lower()
+        if any(keyword in low for keyword in keywords):
+            return candidate
+    return None
+
+
 def _first_complete_sentence(text: str) -> str | None:
     """Return the first sentence that ends with terminal punctuation.
 
@@ -231,7 +300,7 @@ def _first_complete_sentence(text: str) -> str | None:
     reply never ends mid-sentence.
     """
     for raw in re.split(r"(?<=[.!?])\s+", text.replace("\n", " ")):
-        candidate = raw.strip()
+        candidate = _clean_source_sentence(raw)
         if candidate and candidate[-1] in ".!?":
             return candidate
     return None
@@ -256,7 +325,6 @@ def build_supported_reply(
     invented. The wording stays concise and friendly for staff review.
     """
     primary = sources[0]
-    primary_title = str(primary.get("document_title", "company documents"))
     primary_type = str(primary.get("document_type", ""))
     combined = " ".join(str(source.get("content", "")) for source in sources[:3])
     combined_low = combined.lower()
@@ -265,58 +333,60 @@ def build_supported_reply(
 
     if "non-refundable" in combined_low and "booking confirmation" in combined_low:
         parts.append(
-            "According to our policy, the booking deposit is non-refundable after "
+            "Our policy says the booking deposit is non-refundable after "
             "booking confirmation."
         )
     elif ("partially refundable" in combined_low or "partial refund" in combined_low) and (
         "30 days" in combined_low or "thirty days" in combined_low
     ):
         parts.append(
-            "According to our policy, deposits may be partially refundable when "
+            "Deposits may be partially refundable when "
             "cancellation happens more than 30 days before the event. The final "
             "refund depends on committed costs and manager review."
         )
     elif "guest count" in combined_low:
-        sentence = _first_sentence_containing(combined, ("guest count",))
+        sentence = _first_natural_source_sentence(
+            combined,
+            ("guest count", "guest", "catering", "seating", "deadline"),
+        )
         if sentence is not None:
-            parts.append(f"According to our {primary_title}: {sentence}")
+            parts.append(sentence)
         else:
             parts.append(
-                f"According to our {primary_title}, there is a guest count "
-                "confirmation deadline; please confirm with us before it passes."
+                "Guest count changes may affect planning, catering, and seating, "
+                "so our team will review the request and follow up."
             )
         parts.append(
-            "If the deadline has already passed, I can ask a manager to review "
-            "your options."
+            "Our team will review your request and follow up with you."
         )
     elif primary_type in ("pricing", "package"):
-        sentence = _first_sentence_containing(
+        sentence = _first_natural_source_sentence(
             combined, ("package", "price", "pricing", "include", "cost")
         )
         if sentence is not None:
-            parts.append(f"Based on our {primary_title}: {sentence}")
+            parts.append(sentence)
         else:
             parts.append(
-                f"I can share details from our {primary_title}; a member of our "
-                "team will confirm the exact pricing and inclusions for your date."
+                "A member of our team can confirm the exact pricing and inclusions "
+                "for your date."
             )
     else:
-        sentence = _first_sentence_containing(
+        sentence = _first_natural_source_sentence(
             combined, tuple(word for word in message_body.lower().split() if len(word) > 3)
         )
         if sentence is None:
             # Never raw-slice RAG content (that produced mid-sentence replies);
             # fall back to the first *complete* sentence, or a safe complete line.
             sentence = (
-                _first_sentence_containing(combined, ("policy", "the", "is"))
+                _first_natural_source_sentence(combined, ("policy", "the", "is"))
                 or _first_complete_sentence(combined)
             )
         if sentence:
-            parts.append(f"According to our {primary_title}: {sentence}")
+            parts.append(sentence)
         else:
             parts.append(
-                f"I can share what's in our {primary_title}; a member of our team "
-                "will follow up with the details."
+                "A member of our team will review your request and follow up with "
+                "the details."
             )
 
     if _needs_escalation(message_body, combined, risk_level):
@@ -407,6 +477,116 @@ def _is_payment_verification_request(message_body: str, intent_label: str | None
     if any(term in normalized for term in _REFUND_OR_CANCELLATION_TERMS):
         return False
     return any(term in normalized for term in _PAYMENT_VERIFICATION_TERMS)
+
+
+def _is_contact_followup_request(message_body: str) -> bool:
+    return any(pattern.search(message_body) for pattern in _CONTACT_FOLLOWUP_PATTERNS)
+
+
+def _is_guest_count_operational_request(message_body: str, intent_label: str | None) -> bool:
+    if intent_label == "guest_count_change":
+        return True
+    return any(pattern.search(message_body) for pattern in _GUEST_COUNT_OPERATIONAL_PATTERNS)
+
+
+def _guest_count_review_reply(message_body: str) -> str:
+    count = _guest_count_phrase(message_body)
+    if count is not None:
+        context = f"Since this involves adding {count}, "
+    else:
+        context = "Since this involves a guest-count or capacity change, "
+    return (
+        f"Hi, thank you for letting us know. {context}"
+        "our team will need to review venue capacity, catering availability, "
+        "seating arrangements, and any package or price impact. We'll follow up "
+        "with you shortly."
+    )
+
+
+def _guest_count_phrase(message_body: str) -> str | None:
+    patterns = (
+        r"\b(\d+\s+extra\s+guests?)\b",
+        r"\b(\d+\s+additional\s+guests?)\b",
+        r"\b(\d+\s+more\s+guests?)\b",
+        r"\b(\d+\s+guests?)\b",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, message_body, flags=re.IGNORECASE)
+        if match:
+            return match.group(1).lower()
+    return None
+
+
+def _is_high_risk_review_request(
+    message_body: str,
+    intent_label: str | None,
+    risk_level: str | None,
+) -> bool:
+    normalized = message_body.lower()
+    has_complaint = intent_label == "complaint" or any(term in normalized for term in _COMPLAINT_TERMS)
+    has_handoff = intent_label == "human_escalation" or any(
+        term in normalized for term in _HUMAN_ESCALATION_TERMS
+    )
+    return has_complaint or has_handoff
+
+
+def _high_risk_review_reply(
+    message_body: str,
+    intent_label: str | None,
+    risk_level: str | None,
+) -> str:
+    issue = _issue_category(message_body)
+    urgency = _urgency_phrase(message_body)
+    wants_manager = intent_label == "human_escalation" or any(
+        term in message_body.lower() for term in _HUMAN_ESCALATION_TERMS
+    )
+
+    parts = ["I'm sorry to hear this, and I understand this needs careful attention."]
+    if urgency is not None:
+        parts.append(f"I understand this is urgent with {urgency}.")
+    if issue is not None:
+        parts.append(f"I'll flag this for manager review so the {issue} can be checked as soon as possible.")
+    elif wants_manager or risk_level == "high":
+        parts.append("I'll flag this for manager review so the team can look into it as soon as possible.")
+    else:
+        parts.append("Our team will review the details and follow up with you shortly.")
+    if wants_manager:
+        parts.append("A manager or team member will follow up with you shortly.")
+    else:
+        parts.append("A team member will follow up with you shortly.")
+    return " ".join(parts)
+
+
+def _issue_category(message_body: str) -> str | None:
+    normalized = message_body.lower()
+    if any(term in normalized for term in ("decoration", "decor", "floral", "flowers", "styling")):
+        return "decoration issue"
+    if any(term in normalized for term in ("payment", "deposit", "invoice", "receipt")):
+        return "payment issue"
+    if any(term in normalized for term in ("guest count", "extra guests", "additional guests", "more guests")):
+        return "guest-count request"
+    if any(term in normalized for term in ("catering", "menu", "food")):
+        return "catering issue"
+    if any(term in normalized for term in ("venue", "seating", "layout")):
+        return "venue or seating issue"
+    if any(term in normalized for term in ("cancel", "cancellation", "refund")):
+        return "cancellation or refund request"
+    return None
+
+
+def _urgency_phrase(message_body: str) -> str | None:
+    normalized = message_body.lower()
+    if "next week" in normalized:
+        return "the wedding coming up next week"
+    if "this week" in normalized:
+        return "the wedding coming up this week"
+    if "tomorrow" in normalized:
+        return "the wedding coming up tomorrow"
+    if "today" in normalized:
+        return "the wedding coming up today"
+    if any(term in normalized for term in ("immediately", "urgent", "asap")):
+        return "the urgent timing"
+    return None
 
 
 def build_contextual_rag_query(
@@ -503,15 +683,27 @@ async def generate_reply_text_with_optional_llm(
     if llm_client is None:
         return _with_fallback_reason(template_reply, "llm_disabled_or_not_configured")
 
+    retrieval_result = check_retrieval_guardrails(template_reply.rag_sources, tenant_slug)
+    if not retrieval_result.result.allowed:
+        return _with_fallback_reason(template_reply, "llm_retrieval_rejected_by_guardrails")
+    prompt_sources = retrieval_result.sources
+    prompt_memory = [
+        {
+            **message,
+            "body": redact_pii(str(message.get("body", ""))),
+        }
+        for message in (conversation_memory or [])
+    ]
+
     try:
         response = await llm_client.generate_suggested_reply(
             LLMReplyRequest(
-                client_message=message_body,
+                client_message=redact_pii(message_body),
                 intent_label=intent_label,
                 risk_level=risk_level,
-                risk_reason=risk_reason,
-                rag_sources=template_reply.rag_sources,
-                conversation_memory=conversation_memory or [],
+                risk_reason=redact_pii(risk_reason or "") or None,
+                rag_sources=prompt_sources,
+                conversation_memory=prompt_memory,
             )
         )
         llm_text = response.text.strip()
@@ -593,6 +785,15 @@ async def generate_suggested_reply(
             rag_sources=[],
             generation_method=GENERATION_METHOD_TEMPLATE,
         )
+    elif _is_contact_followup_request(input_result.sanitized_text or message.body):
+        generated = GeneratedReply(
+            suggested_text=CONTACT_FOLLOWUP_REPLY,
+            answer_supported=False,
+            refusal_reason=CONTACT_FOLLOWUP_REFUSAL_REASON,
+            source_document_ids=[],
+            rag_sources=[],
+            generation_method=GENERATION_METHOD_TEMPLATE,
+        )
     else:
         memory_messages = await ConversationMemoryService().load_recent(
             tenant_id=tenant_id,
@@ -632,6 +833,40 @@ async def generate_suggested_reply(
             ],
             llm_client_factory=llm_client_factory,
         )
+        if (
+            not generated.answer_supported
+            and not generated.rag_sources
+            and _is_guest_count_operational_request(message_body, message.intent_label)
+        ):
+            generated = GeneratedReply(
+                suggested_text=_guest_count_review_reply(message_body),
+                answer_supported=False,
+                refusal_reason=GUEST_COUNT_REVIEW_REFUSAL_REASON,
+                source_document_ids=[],
+                rag_sources=[],
+                generation_method=GENERATION_METHOD_TEMPLATE,
+            )
+        elif (
+            not generated.answer_supported
+            and not generated.rag_sources
+            and _is_high_risk_review_request(
+                message_body,
+                message.intent_label,
+                message.risk_level,
+            )
+        ):
+            generated = GeneratedReply(
+                suggested_text=_high_risk_review_reply(
+                    message_body,
+                    message.intent_label,
+                    message.risk_level,
+                ),
+                answer_supported=False,
+                refusal_reason=HIGH_RISK_REVIEW_REFUSAL_REASON,
+                source_document_ids=[],
+                rag_sources=[],
+                generation_method=GENERATION_METHOD_TEMPLATE,
+            )
         (
             suggested_text,
             rag_sources,

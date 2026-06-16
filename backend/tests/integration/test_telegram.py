@@ -22,7 +22,10 @@ from app.services.audit_log_service import (
 from app.services.inbound_message_processing_service import (
     InboundMessageProcessingService,
 )
-from app.services.conversation_memory_service import ConversationMemoryMessage
+from app.services.conversation_memory_service import (
+    ConversationMemoryMessage,
+    _redact_sensitive_text,
+)
 from app.services.intent_classifier_service import IntentClassification
 from app.models.suggested_reply import SuggestedReplyStatus
 from app.services.telegram_auto_reply_service import (
@@ -81,6 +84,17 @@ async def create_document(
 
 @pytest.fixture(autouse=True)
 def enable_telegram(monkeypatch: pytest.MonkeyPatch):
+    from app.core.config import settings
+    from app.services.embedding_service import (
+        DeterministicFallbackEmbeddingProvider,
+        embedding_service,
+    )
+
+    monkeypatch.setattr(
+        embedding_service,
+        "_provider",
+        DeterministicFallbackEmbeddingProvider(settings.embedding_dim),
+    )
     monkeypatch.setattr("app.api.v1.telegram.settings.telegram_enabled", True)
     monkeypatch.setattr("app.api.v1.telegram.settings.telegram_webhook_secret", SECRET)
     monkeypatch.setattr("app.services.telegram_service.settings.telegram_bot_token", "token")
@@ -156,7 +170,7 @@ class ScopedFakeMemoryService:
             ConversationMemoryMessage(
                 message_id=str(message.id),
                 direction=message.direction.value,
-                body=message.body,
+                body=_redact_sensitive_text(message.body),
                 sent_at=message.sent_at.isoformat(),
             )
         )
@@ -175,6 +189,42 @@ def install_scoped_fake_memory(monkeypatch: pytest.MonkeyPatch) -> None:
         "app.services.suggested_reply_service.ConversationMemoryService",
         ScopedFakeMemoryService,
     )
+
+
+def assert_no_raw_source_formatting(text: str) -> None:
+    lowered = text.lower()
+    forbidden = (
+        "according to our faq:",
+        "according to our faq",
+        "according to our cancellation policy:",
+        "based on our",
+        "faq:",
+        "q: can i",
+        "q:",
+        "a:",
+    )
+    for marker in forbidden:
+        assert marker not in lowered, f"raw source artifact leaked: {marker!r} in {text!r}"
+
+
+def assert_no_unsafe_resolution_promise(text: str) -> None:
+    lowered = text.lower()
+    forbidden = (
+        "we will refund",
+        "we guarantee",
+        "we admit",
+        "we will definitely fix",
+        "definitely fix",
+        "compensation",
+    )
+    for marker in forbidden:
+        assert marker not in lowered, f"unsafe promise leaked: {marker!r} in {text!r}"
+
+
+def assert_no_contact_pii(text: str) -> None:
+    assert "rayan@example.com" not in text
+    assert "+96170123456" not in text
+    assert "+961 70 123 456" not in text
 
 
 async def fake_supported_suggested_reply(session, tenant_id, user_id, conversation, message, **kwargs):
@@ -305,6 +355,138 @@ async def test_inbound_telegram_message_creates_message(
     assert message.body == "Hi, do you have wedding packages?"
     assert message.intent_label is not None
     assert message.risk_level is not None
+
+
+async def test_telegram_pii_contact_message_redacts_reply_memory_and_audits(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    install_scoped_fake_memory(monkeypatch)
+    enable_auto_reply(monkeypatch)
+    fail_on_telegram_send(monkeypatch)
+    body = (
+        "My email is [rayan@example.com](mailto:rayan@example.com) and my phone "
+        "number is +96170123456. Please have someone contact me about my booking."
+    )
+
+    response = await post_telegram_update(
+        client,
+        telegram_update(chat_id=1801, message_id=1801, text=body),
+    )
+
+    assert response.status_code == 200
+    conversation_id = UUID(response.json()["conversation_id"])
+    message = await db_session.get(Message, UUID(response.json()["message_id"]))
+    assert message is not None
+    assert message.body == body
+
+    reply = (
+        await db_session.execute(
+            select(SuggestedReply).where(SuggestedReply.message_id == message.id)
+        )
+    ).scalar_one()
+    reply_text = reply.suggested_text.lower()
+    assert_no_contact_pii(reply.suggested_text)
+    assert "contact you about your booking" in reply_text
+    assert "team member" in reply_text
+
+    memory = await ScopedFakeMemoryService().load_recent(
+        tenant_id=message.tenant_id,
+        conversation_id=conversation_id,
+    )
+    assert len(memory) == 1
+    assert_no_contact_pii(memory[0].body)
+    assert "[REDACTED_EMAIL]" in memory[0].body
+    assert "[REDACTED_PHONE]" in memory[0].body
+    assert "contact me about my booking" in memory[0].body
+
+    audits = (
+        await db_session.execute(
+            select(AuditLog).where(AuditLog.tenant_id == message.tenant_id)
+        )
+    ).scalars().all()
+    audit_details = " ".join(str(audit.details) for audit in audits)
+    assert_no_contact_pii(audit_details)
+    assert "[REDACTED_EMAIL]" in audit_details
+    assert "[REDACTED_PHONE]" in audit_details
+
+
+async def test_telegram_spaced_phone_redacted_outside_original_message(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    install_scoped_fake_memory(monkeypatch)
+    enable_auto_reply(monkeypatch)
+    fail_on_telegram_send(monkeypatch)
+    body = "My number is +961 70 123 456. Please have someone contact me about my booking."
+
+    response = await post_telegram_update(
+        client,
+        telegram_update(chat_id=1802, message_id=1802, text=body),
+    )
+
+    assert response.status_code == 200
+    conversation_id = UUID(response.json()["conversation_id"])
+    message = await db_session.get(Message, UUID(response.json()["message_id"]))
+    assert message is not None
+    assert message.body == body
+
+    reply = (
+        await db_session.execute(
+            select(SuggestedReply).where(SuggestedReply.message_id == message.id)
+        )
+    ).scalar_one()
+    assert "+961 70 123 456" not in reply.suggested_text
+    assert "contact you about your booking" in reply.suggested_text.lower()
+
+    memory = await ScopedFakeMemoryService().load_recent(
+        tenant_id=message.tenant_id,
+        conversation_id=conversation_id,
+    )
+    assert "+961 70 123 456" not in memory[0].body
+    assert "[REDACTED_PHONE]" in memory[0].body
+
+
+async def test_telegram_pii_redaction_keeps_guest_count_numbers(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    install_scoped_fake_memory(monkeypatch)
+    enable_auto_reply(monkeypatch)
+    fail_on_telegram_send(monkeypatch)
+    body = "Can we add 40 extra guests to our 150 guest wedding package?"
+
+    response = await post_telegram_update(
+        client,
+        telegram_update(chat_id=1803, message_id=1803, text=body),
+    )
+
+    assert response.status_code == 200
+    conversation_id = UUID(response.json()["conversation_id"])
+    message = await db_session.get(Message, UUID(response.json()["message_id"]))
+    assert message is not None
+    assert message.intent_label == "guest_count_change"
+    assert "guest_count_change" in message.risk_flags
+
+    memory = await ScopedFakeMemoryService().load_recent(
+        tenant_id=message.tenant_id,
+        conversation_id=conversation_id,
+    )
+    assert memory[0].body == body
+    assert "40 extra guests" in memory[0].body
+    assert "150 guest" in memory[0].body
+    assert "[REDACTED" not in memory[0].body
+
+    reply = (
+        await db_session.execute(
+            select(SuggestedReply).where(SuggestedReply.message_id == message.id)
+        )
+    ).scalar_one()
+    assert "40 extra guests" in reply.suggested_text
+    assert "[REDACTED" not in reply.suggested_text
 
 
 async def test_inbound_telegram_payment_with_human_escalation_is_high_risk(
@@ -1094,6 +1276,139 @@ async def test_high_risk_complaint_does_not_auto_send_and_creates_escalation(
     assert len(created_audits) == 1
 
 
+async def test_high_risk_complaint_manager_draft_is_specific_and_escalated(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    enable_auto_reply(monkeypatch)
+    fail_on_telegram_send(monkeypatch)
+
+    response = await post_telegram_update(
+        client,
+        telegram_update(
+            chat_id=1905,
+            message_id=205,
+            text=(
+                "This is unacceptable. The decoration is wrong, the wedding is "
+                "next week, and I want to speak to a manager immediately."
+            ),
+        ),
+    )
+
+    assert response.status_code == 200
+    conversation_id = UUID(response.json()["conversation_id"])
+    message = await db_session.get(Message, UUID(response.json()["message_id"]))
+    assert message is not None
+    assert message.risk_level == "high"
+    assert message.intent_label in {"complaint", "human_escalation"}
+
+    reply = (
+        await db_session.execute(
+            select(SuggestedReply).where(SuggestedReply.message_id == message.id)
+        )
+    ).scalar_one()
+    text = reply.suggested_text.lower()
+    assert "could not find enough information" not in text
+    assert "manager" in text
+    assert "decoration issue" in text or "decoration" in text
+    assert "next week" in text or "urgent" in text
+    assert "sorry" in text or "understand" in text
+    assert "a member of our team will review your request" not in text
+    assert_no_unsafe_resolution_promise(reply.suggested_text)
+    assert_no_raw_source_formatting(reply.suggested_text)
+
+    escalations = await escalations_for_conversation(db_session, conversation_id)
+    assert len(escalations) == 1
+    assert escalations[0].risk_level == "high"
+    assert escalations[0].intent_label in {"complaint", "human_escalation"}
+
+
+async def test_complaint_without_manager_gets_empathetic_review_draft(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    enable_auto_reply(monkeypatch)
+    fail_on_telegram_send(monkeypatch)
+
+    response = await post_telegram_update(
+        client,
+        telegram_update(
+            chat_id=1906,
+            message_id=206,
+            text=(
+                "I'm really disappointed with the decoration sample. It does not "
+                "look like what we agreed on at all."
+            ),
+        ),
+    )
+
+    assert response.status_code == 200
+    conversation_id = UUID(response.json()["conversation_id"])
+    message = await db_session.get(Message, UUID(response.json()["message_id"]))
+    assert message is not None
+    assert message.risk_level == "high"
+    assert "complaint" in message.risk_flags
+
+    reply = (
+        await db_session.execute(
+            select(SuggestedReply).where(SuggestedReply.message_id == message.id)
+        )
+    ).scalar_one()
+    text = reply.suggested_text.lower()
+    assert "could not find enough information" not in text
+    assert "sorry" in text or "understand" in text
+    assert "decoration issue" in text or "decoration" in text
+    assert "review" in text
+    assert "follow up" in text
+    assert_no_unsafe_resolution_promise(reply.suggested_text)
+
+    escalations = await escalations_for_conversation(db_session, conversation_id)
+    assert len(escalations) == 1
+
+
+async def test_human_escalation_only_gets_manager_handoff_draft(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    enable_auto_reply(monkeypatch)
+    fail_on_telegram_send(monkeypatch)
+
+    response = await post_telegram_update(
+        client,
+        telegram_update(
+            chat_id=1907,
+            message_id=207,
+            text="Please don't send me an automated answer. I want to speak with the manager directly.",
+        ),
+    )
+
+    assert response.status_code == 200
+    conversation_id = UUID(response.json()["conversation_id"])
+    message = await db_session.get(Message, UUID(response.json()["message_id"]))
+    assert message is not None
+    assert message.intent_label == "human_escalation"
+    assert message.risk_level == "high"
+
+    reply = (
+        await db_session.execute(
+            select(SuggestedReply).where(SuggestedReply.message_id == message.id)
+        )
+    ).scalar_one()
+    text = reply.suggested_text.lower()
+    assert "could not find enough information" not in text
+    assert "manager" in text
+    assert "follow up" in text
+    assert "automated answer" not in text
+    assert_no_unsafe_resolution_promise(reply.suggested_text)
+
+    escalations = await escalations_for_conversation(db_session, conversation_id)
+    assert len(escalations) == 1
+    assert escalations[0].intent_label == "human_escalation"
+
+
 @pytest.mark.parametrize(
     ("label", "text"),
     [
@@ -1175,6 +1490,7 @@ async def test_payment_deposit_confirmation_gets_verification_draft_not_refund_p
     assert "verify" in text or "verification" in text
     assert "deposit" in text or "payment" in text
     assert "team" in text or "staff" in text
+    assert_no_raw_source_formatting(reply.suggested_text)
     assert reply.source_document_ids == []
     assert reply.rag_sources == []
     assert reply.auto_sent_at is None
@@ -1840,6 +2156,8 @@ async def test_telegram_followup_uses_same_conversation_memory_for_rag(
     assert "guest" in text
     assert "package" in text
     assert "rate" in text or "price" in text
+    assert_no_raw_source_formatting(reply.suggested_text)
+    assert_no_raw_source_formatting(sent[0])
     assert "adding 30 more guests" in reply.rag_sources[0]["content"].lower()
 
     generated_event = (
@@ -1927,6 +2245,183 @@ async def test_telegram_followup_does_not_borrow_memory_from_other_chat(
         "30 more guests" not in str(event.details.get("rag_query", "")).lower()
         for event in events
     )
+
+
+async def test_telegram_guest_count_draft_does_not_expose_faq_source_formatting(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    enable_auto_reply(monkeypatch)
+    fail_on_telegram_send(monkeypatch)
+    force_intent(monkeypatch, "service_question", 0.95)
+    token = await login(client)
+    await create_document(
+        client,
+        token,
+        title="Faq",
+        document_type="faq",
+        content_text=(
+            "Q: Can I change my guest count after booking? A: Guest count changes "
+            "usually need to be confirmed at least 10 days before the event. "
+            "Large guest count increases may affect catering and seating."
+        ),
+    )
+
+    response = await post_telegram_update(
+        client,
+        telegram_update(
+            chat_id=3010,
+            message_id=3010,
+            text=(
+                "Can someone confirm if the venue and catering team can handle "
+                "40 extra guests? We need an answer this week."
+            ),
+        ),
+    )
+
+    assert response.status_code == 200
+    reply = (
+        await db_session.execute(
+            select(SuggestedReply).where(
+                SuggestedReply.message_id == UUID(response.json()["message_id"])
+            )
+        )
+    ).scalar_one()
+
+    text = reply.suggested_text.lower()
+    assert reply.answer_supported is True
+    assert "guest count" in text or "guest" in text
+    assert "catering" in text or "seating" in text or "10 days" in text
+    assert_no_raw_source_formatting(reply.suggested_text)
+
+
+async def test_telegram_extra_guests_capacity_gets_operational_guest_count_draft(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    enable_auto_reply(monkeypatch)
+    fail_on_telegram_send(monkeypatch)
+
+    response = await post_telegram_update(
+        client,
+        telegram_update(
+            chat_id=3012,
+            message_id=3012,
+            text=(
+                "Can someone confirm if the venue and catering team can handle "
+                "40 extra guests? We need an answer this week."
+            ),
+        ),
+    )
+
+    assert response.status_code == 200
+    conversation_id = UUID(response.json()["conversation_id"])
+    message = await db_session.get(Message, UUID(response.json()["message_id"]))
+    assert message is not None
+    assert message.intent_label == "guest_count_change"
+    assert message.risk_level in {"medium", "high"}
+    assert "guest_count_change" in message.risk_flags
+
+    reply = (
+        await db_session.execute(
+            select(SuggestedReply).where(SuggestedReply.message_id == message.id)
+        )
+    ).scalar_one()
+    text = reply.suggested_text.lower()
+    assert "could not find enough information" not in text
+    assert "40 extra guests" in text
+    assert "venue capacity" in text
+    assert "catering" in text
+    assert "seating" in text
+    assert "price impact" in text or "package" in text
+    assert "guarantee" not in text
+    assert "$" not in text
+    assert_no_raw_source_formatting(reply.suggested_text)
+
+    escalations = await escalations_for_conversation(db_session, conversation_id)
+    assert len(escalations) == 1
+    assert escalations[0].intent_label == "guest_count_change"
+
+
+async def test_telegram_true_availability_with_guest_estimate_stays_availability(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr("app.services.intent_classifier_service._load_model", lambda: None)
+
+    response = await post_telegram_update(
+        client,
+        telegram_update(
+            chat_id=3013,
+            message_id=3013,
+            text="Are you available for a wedding on August 24 for around 120 guests?",
+        ),
+    )
+
+    assert response.status_code == 200
+    message = await db_session.get(Message, UUID(response.json()["message_id"]))
+    assert message is not None
+    assert message.intent_label == "availability_question"
+    assert message.risk_level == "low"
+    assert message.risk_flags == []
+
+
+async def test_telegram_pricing_auto_reply_uses_natural_package_wording(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    enable_auto_reply(monkeypatch)
+    force_intent(monkeypatch, "pricing_request", 0.95)
+    token = await login(client)
+    await create_document(
+        client,
+        token,
+        title="Wedding Package FAQ",
+        document_type="package",
+        content_text=(
+            "Q: What does the Premium Package include? A: Our Premium Package "
+            "includes venue decoration, catering coordination, and photography "
+            "coordination for weddings up to 150 guests."
+        ),
+    )
+    sent: list[str] = []
+
+    async def fake_send_message(self, chat_id: str, text: str):
+        sent.append(text)
+        return {"ok": True, "result": {"message_id": 9010}}
+
+    monkeypatch.setattr("app.services.telegram_service.TelegramService.send_message", fake_send_message)
+
+    response = await post_telegram_update(
+        client,
+        telegram_update(
+            chat_id=3011,
+            message_id=3011,
+            text="Hi, can you send me your wedding package prices for 150 guests?",
+        ),
+    )
+
+    assert response.status_code == 200
+    assert len(sent) == 1
+    delivered = sent[0]
+    assert "premium package" in delivered.lower()
+    assert "venue decoration" in delivered.lower()
+    assert_no_raw_source_formatting(delivered)
+
+    reply = (
+        await db_session.execute(
+            select(SuggestedReply).where(
+                SuggestedReply.message_id == UUID(response.json()["message_id"])
+            )
+        )
+    ).scalar_one()
+    assert reply.answer_supported is True
+    assert reply.rag_sources
+    assert_no_raw_source_formatting(reply.suggested_text)
 
 
 async def test_detail_exposes_auto_reply_skip_reason_for_pending_draft(

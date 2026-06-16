@@ -70,10 +70,24 @@ GUEST_COUNT_TERMS = (
     "extra guests",
     "headcount",
     "people attending",
+    "add guests",
+    "increase guests",
+    "increase the guest count",
+    "venue capacity",
+    "catering capacity",
+    "seating capacity",
 )
 PAYMENT_TERMS = ("payment", "deposit", "invoice", "paid", "charge", "refund")
 CANCELLATION_TERMS = ("cancel", "cancellation", "call off")
-COMPLAINT_TERMS = ("complaint", "complain", "unhappy", "upset", "disappointed", "bad service")
+COMPLAINT_TERMS = (
+    "complaint",
+    "complain",
+    "unhappy",
+    "upset",
+    "disappointed",
+    "bad service",
+    "unacceptable",
+)
 HUMAN_ESCALATION_TERMS = ("human", "manager", "supervisor", "agent", "person")
 EXPLICIT_HUMAN_ESCALATION_PHRASES = (
     "speak to a manager",

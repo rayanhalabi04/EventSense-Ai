@@ -6,6 +6,7 @@ from typing import Protocol
 import httpx
 
 from app.core.config import settings
+from app.services.guardrail_service import redact_pii
 
 
 @dataclass(frozen=True)
@@ -185,7 +186,7 @@ def _user_prompt(request: LLMReplyRequest) -> str:
                 [
                     f"Source {index}: {source.get('document_title', 'Untitled')}",
                     f"Type: {source.get('document_type', '')}",
-                    f"Content: {source.get('content', '')}",
+                    f"Content: {redact_pii(str(source.get('content', '')))}",
                 ]
             )
         )
@@ -195,16 +196,16 @@ def _user_prompt(request: LLMReplyRequest) -> str:
             "\n".join(
                 [
                     f"Message {index} ({message.get('direction', 'unknown')}):",
-                    str(message.get("body", "")),
+                    redact_pii(str(message.get("body", ""))),
                 ]
             )
         )
     return "\n\n".join(
         [
-            f"Client message:\n{request.client_message}",
+            f"Client message:\n{redact_pii(request.client_message)}",
             f"Detected intent: {request.intent_label or 'unknown'}",
             f"Risk level: {request.risk_level or 'unknown'}",
-            f"Risk reason: {request.risk_reason or 'none'}",
+            f"Risk reason: {redact_pii(request.risk_reason or 'none')}",
             "Recent conversation memory:\n"
             + ("\n\n".join(memory_blocks) if memory_blocks else "No recent memory available."),
             "Tenant document sources:\n" + "\n\n".join(source_blocks),

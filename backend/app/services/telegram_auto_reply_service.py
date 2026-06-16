@@ -17,7 +17,7 @@ from app.services.audit_log_service import (
     AUDIT_EVENT_TELEGRAM_AUTO_REPLY_SKIPPED,
     AuditLogService,
 )
-from app.services.guardrail_service import SAFE_REFUSAL, check_input_guardrails
+from app.services.guardrail_service import SAFE_REFUSAL, check_input_guardrails, redact_pii
 from app.services.suggested_reply_service import generate_suggested_reply
 from app.services.telegram_service import TELEGRAM_SOURCE, TelegramApiError, TelegramService
 
@@ -344,7 +344,9 @@ def _contains_risky_keyword(text: str) -> bool:
 def client_facing_auto_reply_text(text: str) -> str:
     cleaned = _strip_staff_facing_prefixes(text)
     cleaned = telegram_plain_text(cleaned)
+    cleaned = _strip_source_formatting_artifacts(cleaned)
     cleaned = _strip_staff_facing_sentences(cleaned)
+    cleaned = redact_pii(cleaned)
     return _concise_telegram_reply(cleaned)
 
 
@@ -382,6 +384,36 @@ def _strip_staff_facing_sentences(text: str) -> str:
         joined = " ".join(part.strip() for part in kept if part.strip()).strip()
         if joined:
             out_lines.append(joined)
+    cleaned = "\n".join(out_lines)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned.strip()
+
+
+def _strip_source_formatting_artifacts(text: str) -> str:
+    """Remove document/source labels that should not be client-visible."""
+    out_lines: list[str] = []
+    for line in text.split("\n"):
+        stripped = line.strip()
+        if not stripped:
+            out_lines.append("")
+            continue
+        stripped = re.sub(
+            r"(?i)\b(?:according to|based on)\s+our\s+[^:.\n]{1,80}:\s*",
+            "",
+            stripped,
+        )
+        stripped = re.sub(
+            r"(?i)^(?:faq\s*:\s*)?q\s*:\s*.*?\?\s*(?:faq\s*:\s*)?a\s*:\s*",
+            "",
+            stripped,
+        ).strip()
+        stripped = re.sub(r"(?i)^(?:faq\s*:\s*)?q\s*:\s*", "", stripped).strip()
+        if stripped.endswith("?"):
+            continue
+        stripped = re.sub(r"(?i)^(?:faq\s*:\s*)?a\s*:\s*", "", stripped).strip()
+        stripped = re.sub(r"(?i)\b(?:q|a)\s*:\s*", "", stripped).strip()
+        if stripped:
+            out_lines.append(stripped)
     cleaned = "\n".join(out_lines)
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
     return cleaned.strip()
@@ -435,7 +467,9 @@ def staff_facing_telegram_text(text: str) -> str:
     """
     cleaned = _strip_staff_facing_prefixes(text)
     cleaned = telegram_plain_text(cleaned)
+    cleaned = _strip_source_formatting_artifacts(cleaned)
     cleaned = _strip_staff_facing_sentences(cleaned)
+    cleaned = redact_pii(cleaned)
     return safe_trim_client_message(cleaned, TELEGRAM_HARD_CHAR_LIMIT)
 
 

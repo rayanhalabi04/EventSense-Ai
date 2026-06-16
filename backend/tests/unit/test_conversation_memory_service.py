@@ -145,6 +145,34 @@ async def test_store_inbound_message_writes_redacted_inbound_only() -> None:
     assert "<REDACTED>" in loaded[0].body
 
 
+async def test_store_inbound_message_redacts_contact_pii_but_keeps_guest_counts() -> None:
+    redis = FakeRedis()
+    tenant_id = uuid4()
+    conversation_id = uuid4()
+    service = ConversationMemoryService(redis_client=redis, enabled=True)
+    inbound = Message(
+        id=uuid4(),
+        tenant_id=tenant_id,
+        conversation_id=conversation_id,
+        direction=MessageDirection.inbound,
+        body=(
+            "My email is rayan@example.com and my phone number is +961 70 123 456. "
+            "Can we add 40 extra guests to our 150 guest wedding package?"
+        ),
+        sent_at=datetime.now(timezone.utc),
+    )
+
+    await service.store_inbound_message(tenant_id=tenant_id, message=inbound)
+
+    loaded = await service.load_recent(tenant_id=tenant_id, conversation_id=conversation_id)
+    assert "rayan@example.com" not in loaded[0].body
+    assert "+961 70 123 456" not in loaded[0].body
+    assert "[REDACTED_EMAIL]" in loaded[0].body
+    assert "[REDACTED_PHONE]" in loaded[0].body
+    assert "40 extra guests" in loaded[0].body
+    assert "150 guest" in loaded[0].body
+
+
 async def test_redis_failures_return_empty_memory_without_raising() -> None:
     service = ConversationMemoryService(
         redis_client=FailingRedis(),

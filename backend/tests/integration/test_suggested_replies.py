@@ -680,8 +680,8 @@ async def test_suggested_reply_redacts_pii_from_stored_rag_sources(
     reply = await generate_reply(client, token, simulated["conversation_id"])
 
     assert reply["answer_supported"] is True
-    assert "<EMAIL>" in reply["rag_sources"][0]["content"]
-    assert "<PHONE>" in reply["rag_sources"][0]["content"]
+    assert "[REDACTED_EMAIL]" in reply["rag_sources"][0]["content"]
+    assert "[REDACTED_PHONE]" in reply["rag_sources"][0]["content"]
     assert "billing@example.com" not in reply["rag_sources"][0]["content"]
     events = await audit_events(db_session, AUDIT_EVENT_GUARDRAIL_RETRIEVAL_REDACTED)
     assert any(e.details.get("suggested_reply_id") == reply["id"] for e in events)
@@ -767,6 +767,33 @@ async def test_high_risk_cancellation_reply_includes_escalation_wording(
     assert reply["answer_supported"] is True
     assert "manager" in text
     assert "escalate" in text
+
+
+async def test_complaint_without_manager_uses_specific_review_draft_without_sources(
+    client: AsyncClient,
+):
+    token = await login(client)
+    simulated = await create_simulator_message(
+        client,
+        token,
+        body=(
+            "I'm really disappointed with the decoration sample. It does not "
+            "look like what we agreed on at all."
+        ),
+    )
+
+    reply = await generate_reply(client, token, simulated["conversation_id"])
+
+    text = reply["suggested_text"].lower()
+    assert reply["answer_supported"] is False
+    assert reply["rag_sources"] == []
+    assert "could not find enough information" not in text
+    assert "sorry" in text or "understand" in text
+    assert "decoration" in text
+    assert "review" in text
+    assert "follow up" in text
+    for unsafe in ("we will refund", "we guarantee", "we admit", "we will definitely fix"):
+        assert unsafe not in text
 
 
 async def test_conversation_detail_includes_latest_suggested_reply(

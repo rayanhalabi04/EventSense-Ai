@@ -17,6 +17,16 @@ def test_complaint_becomes_high_risk():
     assert "complaint" in risk.reason.lower()
 
 
+def test_unacceptable_manager_message_counts_as_high_risk_complaint():
+    risk = detect_message_risk(
+        "This is unacceptable and I want to speak to a manager immediately.",
+        "human_escalation",
+    )
+
+    assert risk.level == "high"
+    assert risk.flags == ["complaint"]
+
+
 def test_cancellation_request_becomes_high_risk():
     risk = detect_message_risk("We need to cancel our booking.", "cancellation_request")
 
@@ -36,6 +46,26 @@ def test_guest_count_change_becomes_medium_or_high_based_on_urgency():
     assert medium.flags == ["guest_count_change"]
     assert high.level == "high"
     assert high.flags == ["guest_count_change"]
+
+
+def test_capacity_extra_guest_message_is_guest_count_risk_even_if_mislabeled():
+    risk = detect_message_risk(
+        "Can the venue and catering team handle 40 extra guests?",
+        "availability_question",
+    )
+
+    assert risk.level == "medium"
+    assert risk.flags == ["guest_count_change"]
+
+
+def test_true_availability_with_guest_estimate_stays_low_risk():
+    risk = detect_message_risk(
+        "Are you available for a wedding on August 24 for around 120 guests?",
+        "availability_question",
+    )
+
+    assert risk.level == "low"
+    assert risk.flags == []
 
 
 def test_payment_issue_becomes_medium_or_high_based_on_language():

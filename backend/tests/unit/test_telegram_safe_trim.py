@@ -7,6 +7,7 @@ import pytest
 from app.services.telegram_auto_reply_service import (
     SAFE_CLIENT_FALLBACK,
     TELEGRAM_HARD_CHAR_LIMIT,
+    client_facing_auto_reply_text,
     safe_trim_client_message,
     staff_facing_telegram_text,
 )
@@ -105,3 +106,33 @@ def test_staff_facing_text_preserves_complete_policy_reply():
         "you shortly."
     )
     assert staff_facing_telegram_text(text) == text
+
+
+def test_client_facing_text_removes_raw_faq_source_formatting():
+    text = (
+        "Hi, thank you for your message. According to our Faq: "
+        "Q: Can I change my guest count after booking? "
+        "A: Guest count changes usually need to be confirmed at least 10 days "
+        "before the event."
+    )
+
+    result = client_facing_auto_reply_text(text)
+
+    assert "Faq:" not in result
+    assert "Q: Can I" not in result
+    assert "A:" not in result
+    assert "Guest count changes usually need to be confirmed" in result
+
+
+def test_staff_facing_text_removes_raw_source_labels_before_manual_send():
+    text = (
+        "According to our Cancellation Policy: Q: Is my deposit refundable? "
+        "A: The booking deposit is non-refundable after booking confirmation."
+    )
+
+    result = staff_facing_telegram_text(text)
+
+    assert "Cancellation Policy:" not in result
+    assert "Q:" not in result
+    assert "A:" not in result
+    assert "non-refundable after booking confirmation" in result
