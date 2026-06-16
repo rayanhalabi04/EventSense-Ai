@@ -198,8 +198,10 @@ export function InboxPage() {
 function getInitials(name: string) {
   const initials = name
     .split(' ')
-    .map((n) => n[0])
-    .filter(Boolean)
+    .flatMap((n) => {
+      const initial = n[0]
+      return initial ? [initial] : []
+    })
     .join('')
     .slice(0, 2)
     .toUpperCase()
