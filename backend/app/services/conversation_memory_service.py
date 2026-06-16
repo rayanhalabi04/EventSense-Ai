@@ -10,12 +10,16 @@ from uuid import UUID
 
 from app.core.config import settings
 from app.models.message import Message, MessageDirection
+from app.services.guardrail_service import redact_pii
 
 
 logger = logging.getLogger(__name__)
 
 
 class RedisClient(Protocol):
+    async def ping(self) -> Any:
+        ...
+
     async def lpush(self, key: str, *values: str) -> Any:
         ...
 
@@ -136,6 +140,22 @@ class ConversationMemoryService:
         return self.enabled and bool(settings.redis_url.strip()) and self.max_messages > 0
 
 
+async def get_memory_status() -> str:
+    if not settings.memory_enabled:
+        return "disabled"
+    if not settings.redis_url.strip():
+        return "unavailable"
+    client = _get_redis_client()
+    if client is None:
+        return "unavailable"
+    try:
+        await client.ping()
+    except Exception:
+        logger.warning("conversation memory redis health check failed", exc_info=True)
+        return "unavailable"
+    return "ok"
+
+
 def _get_redis_client() -> RedisClient | None:
     global _redis_client
     if _redis_client is not None:
@@ -169,4 +189,4 @@ def _redact_sensitive_text(text: str) -> str:
     redacted = text
     redacted = _SECRET_PATTERNS[0].sub(lambda match: f"{match.group(1)}=<REDACTED>", redacted)
     redacted = _SECRET_PATTERNS[1].sub("Bearer <REDACTED>", redacted)
-    return redacted
+    return redact_pii(redacted)

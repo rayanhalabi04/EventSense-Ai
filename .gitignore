@@ -4,3 +4,6 @@ __pycache__/
 .venv/
 venv/
 .pytest_cache/
+
+# Generated evaluation outputs (classifier/agent/etc. eval runners)
+eval-artifacts/

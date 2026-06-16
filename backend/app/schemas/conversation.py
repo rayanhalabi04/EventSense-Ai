@@ -17,11 +17,19 @@ class ConversationCreate(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
 
+class ConversationUpdate(BaseModel):
+    status: ConversationStatus
+
+    model_config = ConfigDict(extra="ignore")
+
+
 class ConversationRead(BaseModel):
     id: UUID
     tenant_id: UUID
     client_name: str
     client_contact: str | None
+    source: str | None = None
+    external_conversation_id: str | None = None
     status: ConversationStatus
     created_at: datetime
     updated_at: datetime
@@ -37,6 +45,7 @@ class ConversationDetailMessage(BaseModel):
     status: MessageStatus
     body: str
     source: str | None
+    external_message_id: str | None = None
     intent_label: str | None = None
     intent_confidence: float | None = None
     classified_at: datetime | None = None
@@ -80,6 +89,11 @@ class ConversationDetailResponse(BaseModel):
     latest_risk_detected_at: datetime | None = None
     audit_timeline: list[ConversationDetailAuditEvent]
     suggested_reply: SuggestedReplyRead | None = None
+    # Debugging aid: when the latest suggested reply is a pending draft (not
+    # auto-sent), this carries the reason the Telegram auto-reply was skipped
+    # (e.g. "no_rag_source", "blocked_intent") so it is visible without digging
+    # through the audit log. None when the reply was auto-sent or never skipped.
+    auto_reply_skip_reason: str | None = None
     rag_sources: list[dict[str, object]]
     tasks: list[TaskRead]
     escalations: list[EscalationRead]

@@ -48,6 +48,27 @@ class EscalationRepository:
         )
         return list(result.scalars().all())
 
+    async def find_by_source(
+        self,
+        tenant_id: UUID,
+        *,
+        source_type: str,
+        source_message_id: UUID,
+    ) -> Escalation | None:
+        """Return the existing escalation created from a given source (tenant-scoped),
+        used to keep agent ``apply`` idempotent. At most one is expected."""
+        result = await self.session.execute(
+            select(Escalation)
+            .where(
+                Escalation.tenant_id == tenant_id,
+                Escalation.source_type == source_type,
+                Escalation.source_message_id == source_message_id,
+            )
+            .order_by(Escalation.created_at.asc(), Escalation.id.asc())
+            .limit(1)
+        )
+        return result.scalars().first()
+
     async def add(self, escalation: Escalation) -> Escalation:
         self.session.add(escalation)
         await self.session.flush()

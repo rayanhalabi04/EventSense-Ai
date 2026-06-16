@@ -21,6 +21,7 @@ class MessageRead(BaseModel):
     status: MessageStatus
     body: str
     source: str | None
+    external_message_id: str | None = None
     intent_label: str | None = None
     intent_confidence: float | None = None
     classified_at: datetime | None = None

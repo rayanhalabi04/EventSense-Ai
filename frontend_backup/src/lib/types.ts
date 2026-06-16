@@ -86,6 +86,16 @@ export interface InboxResponse {
   total_pages: number;
 }
 
+export interface ConversationItem {
+  id: UUID;
+  tenant_id: UUID;
+  client_name: string;
+  client_contact: string | null;
+  status: ConversationStatus;
+  created_at: ISODateTime;
+  updated_at: ISODateTime;
+}
+
 export interface ConversationMessage {
   id: UUID;
   tenant_id: UUID;
@@ -235,4 +245,54 @@ export interface SimulatorMessageResponse {
   risk_flags: string[] | null;
   risk_reason: string | null;
   risk_detected_at: ISODateTime | null;
+}
+
+/** Dry-run focused-agent recommendation. Read-only: creates nothing. */
+export interface AgentRecommendedTask {
+  should_create: boolean;
+  reason: string | null;
+}
+
+export interface AgentRecommendedEscalation {
+  should_escalate: boolean;
+  reason: string | null;
+}
+
+/** Ids of records the agent created when applied. Null when not recommended or not applied. */
+export interface AgentApplied {
+  task_id: UUID | null;
+  escalation_id: UUID | null;
+  suggested_reply_id: UUID | null;
+}
+
+export interface AgentToolTrace {
+  tool_name: string;
+  status: string;
+  mode: "dry_run" | "apply" | string;
+  summary: string;
+  input_summary: string | null;
+  output_summary: string | null;
+  source_ids: string[];
+  suggested_reply_preview: string | null;
+  created_id: UUID | null;
+  recommended: Record<string, unknown> | null;
+}
+
+export interface AgentDecision {
+  ran: boolean;
+  skipped_reason: string | null;
+  message_id: UUID | null;
+  conversation_id: UUID | null;
+  intent_label: string | null;
+  trigger_intent: string | null;
+  risk_level: RiskLevel | null;
+  risk_reason: string | null;
+  recommended_task: AgentRecommendedTask;
+  recommended_escalation: AgentRecommendedEscalation;
+  human_review_required: boolean;
+  confidence: string;
+  audit_run_id: UUID;
+  tools_used: AgentToolTrace[];
+  /** Present only on an apply=true response; null for read-only analysis. */
+  applied: AgentApplied | null;
 }

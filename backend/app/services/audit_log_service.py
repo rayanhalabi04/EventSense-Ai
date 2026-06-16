@@ -6,15 +6,21 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.audit_log import AuditLog
+from app.services.guardrail_service import redact_pii
 
 
 AUDIT_EVENT_AUTH_LOGIN_SUCCESS = "auth.login_success"
 AUDIT_EVENT_AUTH_LOGIN_FAILED = "auth.login_failed"
 AUDIT_EVENT_AUTH_LOGOUT = "auth.logout"
 AUDIT_EVENT_SIMULATOR_MESSAGE_RECEIVED = "simulator.message_received"
+AUDIT_EVENT_TELEGRAM_MESSAGE_RECEIVED = "telegram.message_received"
+AUDIT_EVENT_TELEGRAM_REPLY_SENT = "telegram.reply_sent"
+AUDIT_EVENT_TELEGRAM_AUTO_REPLY_SENT = "telegram.auto_reply_sent"
+AUDIT_EVENT_TELEGRAM_AUTO_REPLY_SKIPPED = "telegram.auto_reply_skipped"
 AUDIT_EVENT_MESSAGE_INTENT_CLASSIFIED = "message.intent_classified"
 AUDIT_EVENT_MESSAGE_RISK_DETECTED = "message.risk_detected"
 AUDIT_EVENT_CONVERSATION_DETAIL_VIEWED = "conversation.detail_viewed"
+AUDIT_EVENT_CONVERSATION_STATUS_CHANGED = "conversation.status_changed"
 AUDIT_EVENT_TENANT_CROSS_TENANT_ACCESS_BLOCKED = "tenant.cross_tenant_access_blocked"
 AUDIT_EVENT_TASK_CREATED = "task.created"
 AUDIT_EVENT_TASK_UPDATED = "task.updated"
@@ -23,6 +29,17 @@ AUDIT_EVENT_ESCALATION_CREATED = "escalation.created"
 AUDIT_EVENT_ESCALATION_UPDATED = "escalation.updated"
 AUDIT_EVENT_ESCALATION_STATUS_CHANGED = "escalation.status_changed"
 AUDIT_EVENT_ESCALATION_RESOLVED = "escalation.resolved"
+AUDIT_EVENT_AGENT_DECISION_CREATED = "agent.decision_created"
+AUDIT_EVENT_AGENT_SKIPPED = "agent.skipped"
+AUDIT_EVENT_AGENT_STARTED = "agent.started"
+AUDIT_EVENT_AGENT_TOOL_PLANNED = "agent.tool_planned"
+AUDIT_EVENT_AGENT_TOOL_EXECUTED = "agent.tool_executed"
+AUDIT_EVENT_AGENT_TOOL_FAILED = "agent.tool_failed"
+AUDIT_EVENT_AGENT_COMPLETED = "agent.completed"
+AUDIT_EVENT_AGENT_TASK_CREATED = "agent.task_created"
+AUDIT_EVENT_AGENT_ESCALATION_CREATED = "agent.escalation_created"
+AUDIT_EVENT_AGENT_SUGGESTED_REPLY_DRAFTED = "agent.suggested_reply_drafted"
+AUDIT_EVENT_AGENT_HUMAN_REVIEW_REQUIRED = "agent.human_review_required"
 AUDIT_EVENT_DOCUMENT_CREATED = "document.created"
 AUDIT_EVENT_DOCUMENT_UPDATED = "document.updated"
 AUDIT_EVENT_DOCUMENT_ARCHIVED = "document.archived"
@@ -56,6 +73,8 @@ def _json_safe(value: object) -> object:
         return {str(key): _json_safe(item) for key, item in value.items()}
     if isinstance(value, list | tuple | set):
         return [_json_safe(item) for item in value]
+    if isinstance(value, str):
+        return redact_pii(value)
     return value
 
 

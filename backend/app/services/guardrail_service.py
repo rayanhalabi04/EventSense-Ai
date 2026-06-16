@@ -83,6 +83,10 @@ _SUSPICIOUS_RETRIEVED_PATTERNS = (
     r"\bdeveloper message\b",
 )
 
+REDACTED_EMAIL = "[REDACTED_EMAIL]"
+REDACTED_PHONE = "[REDACTED_PHONE]"
+REDACTED_NUMBER = "[REDACTED_NUMBER]"
+
 _EMAIL_RE = re.compile(r"(?:mailto:)?[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", re.IGNORECASE)
 _PHONE_RE = re.compile(
     r"(?<!\w)(?:\+?961[\s.-]?)?(?:0?3|0?7[01689]|0?8[18]|0?9|01|04|05|06)[\s.-]?\d{3}[\s.-]?\d{3,4}(?!\w)"
@@ -105,9 +109,9 @@ def _append_flag(flags: list[str], flag: str) -> None:
 
 
 def sanitize_text(text: str) -> tuple[str, list[str]]:
-    redacted = _EMAIL_RE.sub("<EMAIL>", text)
-    redacted = _PHONE_RE.sub("<PHONE>", redacted)
-    redacted = _LONG_NUMBER_RE.sub("<NUMBER>", redacted)
+    redacted = _EMAIL_RE.sub(REDACTED_EMAIL, text)
+    redacted = _PHONE_RE.sub(REDACTED_PHONE, redacted)
+    redacted = _LONG_NUMBER_RE.sub(REDACTED_NUMBER, redacted)
     flags: list[str] = []
     if redacted != text:
         flags.append(FLAG_PII_DETECTED)

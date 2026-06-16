@@ -5,6 +5,7 @@ from fastapi.responses import JSONResponse
 
 from app.api import auth as root_auth
 from app.api.v1 import (
+    agent,
     audit_logs,
     auth,
     conversations,
@@ -17,6 +18,7 @@ from app.api.v1 import (
     simulator,
     suggested_replies,
     tasks,
+    telegram,
     tenants,
 )
 from app.core.config import settings
@@ -49,6 +51,7 @@ app.include_router(tenants.router, prefix="/api/v1/tenants", tags=["tenants"])
 app.include_router(tenants.admin_router, prefix="/api/v1/admin", tags=["admin"])
 app.include_router(conversations.router, prefix="/api/v1/conversations", tags=["conversations"])
 app.include_router(messages.router, prefix="/api/v1/conversations", tags=["messages"])
+app.include_router(agent.router, prefix="/api/v1/conversations", tags=["agent"])
 app.include_router(tasks.router, prefix="/api/v1/tasks", tags=["tasks"])
 app.include_router(escalations.router, prefix="/api/v1/escalations", tags=["escalations"])
 app.include_router(
@@ -57,6 +60,7 @@ app.include_router(
 app.include_router(documents.router, prefix="/api/v1/documents", tags=["documents"])
 app.include_router(rag.router, prefix="/api/v1/rag", tags=["rag"])
 app.include_router(simulator.router, prefix="/api/v1/simulator", tags=["simulator"])
+app.include_router(telegram.router, prefix="/api/v1", tags=["telegram"])
 app.include_router(inbox.router, prefix="/api/v1/inbox", tags=["inbox"])
 app.include_router(audit_logs.router, prefix="/api/v1/audit-logs", tags=["audit-logs"])
 app.include_router(health.router, tags=["health"])

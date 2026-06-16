@@ -3,6 +3,7 @@ import { RiskBadge } from "@/components/badges/risk-badge";
 import { StatusBadge } from "@/components/badges/status-badge";
 import { ActionButton } from "@/components/common/action-button";
 import { ErrorState, LoadingState } from "@/components/common/states";
+import { AgentAnalysisCard } from "@/components/domain/agent-analysis-card";
 import { AIReplyCard } from "@/components/domain/ai-reply-card";
 import { AuditTimeline } from "@/components/domain/audit-timeline";
 import { MessageCard } from "@/components/domain/message-card";
@@ -25,10 +26,13 @@ import { Separator } from "@/components/ui/separator";
 import { toast } from "@/components/ui/sonner";
 import { Textarea } from "@/components/ui/textarea";
 import {
+  useApplyAgentRecommendation,
   useConversation,
   useCreateEscalation,
   useCreateTask,
   useGenerateReply,
+  useRunAgentAnalysis,
+  useUpdateConversation,
   useUpdateReply,
 } from "@/hooks/queries";
 import { formatConfidence, formatDateTime, humanize } from "@/lib/format";
@@ -49,6 +53,9 @@ export function MessageDetailPage() {
 
   const generate = useGenerateReply(conversationId);
   const updateReply = useUpdateReply(conversationId);
+  const updateConversation = useUpdateConversation(conversationId);
+  const agent = useRunAgentAnalysis(conversationId);
+  const applyAgent = useApplyAgentRecommendation(conversationId);
 
   const [taskOpen, setTaskOpen] = useState(false);
   const [escalateOpen, setEscalateOpen] = useState(false);
@@ -140,11 +147,19 @@ export function MessageDetailPage() {
               label="Mark as resolved"
               variant="ghost"
               size="sm"
+              loading={updateConversation.isPending}
+              disabled={data.conversation_status === "closed"}
               onClick={() =>
-                toast("Resolution is managed via tasks and escalations", {
-                  description:
-                    "A dedicated conversation-status endpoint isn't available in the current API.",
-                })
+                updateConversation.mutate(
+                  { status: "closed" },
+                  {
+                    onSuccess: () => toast.success("Conversation marked as resolved"),
+                    onError: (e) =>
+                      toast.error(
+                        e instanceof Error ? e.message : "Could not mark conversation resolved",
+                      ),
+                  },
+                )
               }
             />
           </div>
@@ -211,6 +226,30 @@ export function MessageDetailPage() {
             onApprove={onApprove}
             onSaveEdit={onSaveEdit}
             onReject={onReject}
+          />
+
+          <AgentAnalysisCard
+            decision={agent.data}
+            running={agent.isPending}
+            disabled={!latestMessageId}
+            applying={applyAgent.isPending}
+            applied={applyAgent.data?.applied}
+            onRun={() => {
+              if (!latestMessageId) return;
+              applyAgent.reset();
+              agent.mutate(latestMessageId, {
+                onError: (e) =>
+                  toast.error(e instanceof Error ? e.message : "Could not run agent analysis"),
+              });
+            }}
+            onApply={() => {
+              if (!latestMessageId) return;
+              applyAgent.mutate(latestMessageId, {
+                onSuccess: () => toast.success("Agent recommendations applied"),
+                onError: (e) =>
+                  toast.error(e instanceof Error ? e.message : "Could not apply recommendations"),
+              });
+            }}
           />
         </div>
 

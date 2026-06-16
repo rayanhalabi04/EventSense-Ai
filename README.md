@@ -25,8 +25,71 @@ curl http://localhost:8000/health
 Expected response:
 
 ```json
-{"status":"ok"}
+{"status":"ok","memory":"ok"}
 ```
+
+### Populate a Demo Environment
+
+A fresh stack starts with empty tenants. There are two seed modes depending on
+the kind of demo you want:
+
+```bash
+make seed-demo-docs   # documents only — for a live Telegram/WhatsApp demo
+make seed-demo-full   # full offline demo (alias: make seed-demo)
+```
+
+**`make seed-demo-docs`** seeds the tenants/users and each tenant's documents
+(chunked + embedded), then stops. The inbox, tasks, and escalations stay empty
+so you can demo the product against **real incoming Telegram/WhatsApp messages**
+— the knowledge base is ready, and every reply you generate is grounded in the
+seeded documents.
+
+**`make seed-demo-full`** builds everything `seed-demo-docs` does and then adds a
+self-contained **offline** demo: simulated conversations across every intent,
+grounded suggested replies, an unsupported-source refusal, and agent-created
+tasks/escalations — so every dashboard page has content without needing a live
+channel.
+
+Both modes build through the **real backend services** (no fake data): document
+upload + chunking/embedding via the Documents service, and (in full mode) the
+WhatsApp-simulator inbound path (intent classification + risk detection +
+guardrails + audit), suggested-reply generation, and the focused agent's apply
+flow. They are **safe to rerun** — documents are skipped by title and whole
+conversations are skipped when they already exist, so a second run is a no-op.
+No client message is ever sent: suggested replies stay `draft` and the agent
+only drafts replies and recommends/creates tasks and escalations.
+
+> **Tenant documents are sample files.** Each document's content is read from
+> `data/tenant-documents/<tenant-slug>/` (e.g. `pricing-packages.txt`,
+> `cancellation-policy.txt`, `deposit-policy.txt`, `faq.txt`) — the same kind of
+> file an agency would upload through the Documents page — rather than being
+> hardcoded. Edit those files (or add your own through the **Documents** page in
+> the UI) to change what the demo knows. The directory is mounted read-only into
+> the api container; set `TENANT_DOCUMENTS_DIR` to point the seed elsewhere.
+
+For a pristine demo (e.g. after running smoke tests, which add throwaway data),
+reset first so seeded documents are authoritative:
+
+```bash
+make reset            # destroys the DB volume, re-migrates, re-seeds base tenants
+make seed-demo-full   # populate the full demo (or seed-demo-docs for a live demo)
+```
+
+After seeding, log in and you should see a populated inbox, documents, message
+detail with RAG sources and suggested replies, an unsupported refusal, agent
+analysis/apply, tasks, escalations, and audit logs.
+
+**Demo logins** (created by the seed):
+
+| Tenant | Role | Email | Password |
+| --- | --- | --- | --- |
+| Elegant Weddings | manager | `admin@elegant-weddings.demo` | `demo-password-1` |
+| Elegant Weddings | staff | `staff@elegant-weddings.demo` | `demo-staff-1` |
+| Royal Events | manager | `admin@royal-events.demo` | `demo-password-2` |
+| Royal Events | staff | `staff@royal-events.demo` | `demo-staff-2` |
+
+> The two tenants have intentionally **different** pricing, cancellation, and
+> deposit policies so tenant-scoped RAG and isolation are visible in the demo.
 
 ### Step-by-step Startup
 
@@ -76,6 +139,92 @@ Stop the stack and remove database volumes:
 docker compose down -v
 ```
 
+### AI Evaluations
+
+Offline, deterministic evaluations of the AI features. They run inside the API
+image with the repo mounted (no database needed) and write artifacts to
+`eval-artifacts/` (gitignored). One command runs the gated set:
+
+```bash
+make eval-ai          # classifier + agent + guardrails (stops on first failure)
+```
+
+Or run them individually:
+
+```bash
+make eval-classifier  # intent classifier accuracy vs. a golden set
+make eval-agent       # dry-run agent decisions vs. a golden set
+make eval-guardrails  # guardrail red-team prompts (block / allow / redact)
+make eval-rag         # RAG retrieval metrics (informational only — see note)
+```
+
+What each proves:
+
+- **eval-classifier** — the intent classifier predicts the expected label across
+  all intents (pass threshold ≥ 0.80; writes `eval-artifacts/classifier_eval.json`).
+- **eval-agent** — the bounded dry-run agent recommends the correct action
+  (escalation / task / human-review / skip) for every intent/risk combination and
+  never runs for non-trigger intents (threshold 1.0, deterministic; writes
+  `eval-artifacts/agent_eval.json`).
+- **eval-guardrails** — input rails block unsafe/prompt-injection/cross-tenant
+  prompts, allow safe ones, and redact PII (gates via exit code; prints a report).
+- **eval-rag** — retrieval hit@3 / MRR / refusal / tenant-isolation metrics. The
+  JSON output also reports `embedding_backend`, `embedding_is_semantic`, and
+  `embedding_dim` so you can see whether it ran on semantic or deterministic
+  fallback vectors. **Informational only:** it prints metrics but does not yet
+  gate on a threshold, so it is excluded from `make eval-ai`.
+
+`make eval-ai` exits non-zero if any gated eval fails, making it suitable for a
+future CI check.
+
+### RAG and Embeddings
+
+Tenant documents are chunked, embedded, and stored in PostgreSQL with **pgvector**.
+Retrieval is cosine similarity in pgvector, always filtered by `tenant_id`, and
+returns the source chunks it used; queries with no sufficiently similar chunk are
+refused rather than answered.
+
+Two embedding backends are supported, selected by `EMBEDDING_PROVIDER`:
+
+- **Semantic embeddings (recommended)** — set `EMBEDDING_PROVIDER=gemini` (reuses
+  `GEMINI_API_KEY`) or `EMBEDDING_PROVIDER=openai` (reuses `OPENAI_API_KEY`). This
+  gives true semantic retrieval: relevant chunks are found by meaning, not just
+  shared keywords.
+- **Deterministic fallback (default)** — `EMBEDDING_PROVIDER=fallback` produces
+  local, offline, **non-semantic** keyword/hash vectors. It needs no API key and
+  keeps the demo running, but it behaves like keyword matching and is never
+  presented as semantic. When a semantic provider is selected but has no key, the
+  app safely degrades to this fallback (unless `EMBEDDING_FALLBACK_ENABLED=false`,
+  which makes startup fail fast instead).
+
+Relevant environment variables (see `.env.example`):
+
+```bash
+EMBEDDING_PROVIDER=gemini        # fallback | gemini | openai
+EMBEDDING_MODEL=                 # empty = provider default (gemini: text-embedding-004)
+EMBEDDING_DIM=768                # pgvector column dimension; must match the model
+EMBEDDING_API_KEY=               # empty = reuse GEMINI_API_KEY / OPENAI_API_KEY
+EMBEDDING_FALLBACK_ENABLED=true  # false = fail fast when no key is configured
+```
+
+**Switching backends / dimensions.** The pgvector column dimension is fixed by
+`EMBEDDING_DIM`. After changing the provider, model, or dimension you must run the
+migrations and re-embed all stored chunks (old vectors can't be compared against
+new query vectors):
+
+```bash
+docker compose run --rm migrate          # applies migration 014 (sets EMBEDDING_DIM)
+make reembed                             # re-embeds every document chunk with the active backend
+# or locally, from ./backend:
+#   PYTHONPATH=. python -m app.reembed_chunks
+```
+
+Run the retrieval eval to confirm which backend is active:
+
+```bash
+make eval-rag   # prints embedding_backend / embedding_is_semantic / embedding_dim + metrics
+```
+
 ### AI Suggested Replies
 
 Suggested replies are staff-review drafts only. They are never sent to clients
@@ -110,19 +259,65 @@ out, errors, returns an empty response, or produces unsafe output, EventSense AI
 keeps the existing template fallback and records `llm_fallback_reason` in the
 generated suggested-reply audit details.
 
-Short-term conversation memory is optional and Redis-backed. By default
-`MEMORY_ENABLED=false`, so the backend does not use Redis in request flows. When
-enabled, simulator inbound messages are copied into a tenant-scoped,
-conversation-scoped Redis list with this key shape:
+### Focused Tool-Using Agent
+
+The EventSense agent is a bounded tool-using workflow, not a free-running
+autonomous bot. It only runs for risky or complex intents:
+`complaint`, `cancellation_request`, `payment_issue`, `urgent_change`,
+`guest_count_change`, and `human_escalation`. Other intents are skipped with
+`intent_not_in_trigger_set`.
+
+The agent has four explicit tools:
+
+- `rag_search` retrieves authenticated-tenant document sources.
+- `suggest_reply` prepares a staff-review draft, grounded in RAG when sources
+  exist and marked unsupported when they do not.
+- `create_follow_up_task` recommends or creates an idempotent staff task.
+- `escalate_to_manager` recommends or creates an idempotent manager escalation.
+
+The implementation is organized as a small production-style agent package:
+
+```text
+backend/app/services/agent/
+  orchestrator.py       # entry point, bounded execution, high-level audit
+  planner.py            # deterministic trigger/tool planning rules
+  tool_registry.py      # registered tools and unknown-tool protection
+  tool_types.py         # shared tool context/result/trace types
+  tools/                # one module per concrete tool
+```
+
+`backend/app/services/agent_orchestrator_service.py` remains as a compatibility
+wrapper for older imports.
+
+Run it with:
+
+```http
+POST /api/v1/conversations/{conversation_id}/agent/run
+```
+
+`apply=false` returns a tool trace and previews only: no task, escalation, or
+suggested reply is written. `apply=true` runs the same bounded plan and persists
+allowed outputs as draft/review records. Replies are never auto-sent or
+approved; human staff stay in control. Tool planning/execution, skips,
+completion, human-review fallback, and agent-created records are audit logged.
+
+Short-term conversation memory is Redis-backed and enabled in the Docker/demo
+configuration (`MEMORY_ENABLED=true` in `.env.example`). Simulator inbound
+messages are copied into a tenant-scoped, conversation-scoped Redis list with
+this key shape:
 
 ```text
 tenant:{tenant_id}:conversation:{conversation_id}:memory
 ```
 
 Suggested replies load the most recent memory entries and include them in the
-LLM prompt as recent conversation context. The deterministic template fallback
-does not require memory, and Redis read/write failures are logged without
-failing simulator or suggested-reply requests.
+LLM prompt as recent conversation context, which helps follow-up questions such
+as "Will that change the price?" refer back to earlier messages in the same
+conversation. The deterministic template fallback does not reason over memory;
+it still uses the current message and tenant RAG sources. Redis read/write or
+health-check failures are logged/reported as memory unavailable without failing
+simulator or suggested-reply requests. `/health` includes `memory` as `ok`,
+`disabled`, or `unavailable`; memory is not a hard readiness dependency.
 
 ```env
 REDIS_URL=redis://redis:6379/0
@@ -130,6 +325,10 @@ MEMORY_ENABLED=true
 SHORT_TERM_MEMORY_TTL_SECONDS=604800
 SHORT_TERM_MEMORY_MAX_MESSAGES=10
 ```
+
+The default TTL is 604800 seconds (7 days). The list is trimmed to the most
+recent 10 messages, and obvious secret values such as API keys, bearer tokens,
+and passwords are redacted before storage.
 
 Manual demo flow:
 
@@ -167,6 +366,31 @@ curl -s -X PATCH "http://localhost:8088/api/v1/suggested-replies/${REPLY_ID}" \
   -H 'Content-Type: application/json' \
   -d '{"status":"approved"}' | python3 -m json.tool
 ```
+
+Follow-up memory demo:
+
+```bash
+FIRST="$(
+  curl -s -X POST http://localhost:8088/api/v1/simulator/messages \
+    -H "Authorization: Bearer ${TOKEN}" \
+    -H 'Content-Type: application/json' \
+    -d '{"client_name":"Memory Demo","client_contact":"+96170100300","body":"Can we add 30 more guests?"}'
+)"
+CONVERSATION_ID="$(printf '%s' "${FIRST}" | python3 -c 'import json,sys; print(json.load(sys.stdin)["conversation_id"])')"
+
+curl -s -X POST http://localhost:8088/api/v1/simulator/messages \
+  -H "Authorization: Bearer ${TOKEN}" \
+  -H 'Content-Type: application/json' \
+  -d '{"conversation_id":"'"${CONVERSATION_ID}"'","body":"Will that change the price?"}'
+
+curl -s -X POST "http://localhost:8088/api/v1/conversations/${CONVERSATION_ID}/suggested-reply" \
+  -H "Authorization: Bearer ${TOKEN}" | python3 -m json.tool
+```
+
+With `LLM_ENABLED=true`, the LLM prompt includes both recent messages as memory
+context. With the default deterministic template, the request still succeeds
+but follow-up pronoun resolution is limited to the current message and retrieved
+tenant documents.
 
 For an unsupported question, create another simulator message such as
 `Can you book my honeymoon flight?` and generate a suggested reply for that

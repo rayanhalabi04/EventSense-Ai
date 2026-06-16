@@ -14,6 +14,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_async_session
+from app.services.conversation_memory_service import get_memory_status
 from app.services.intent_classifier_service import get_classifier_status
 
 
@@ -30,6 +31,7 @@ async def health(session: AsyncSession = Depends(get_async_session)) -> JSONResp
         "pgvector": await _check_pgvector(session),
         "migration": await _check_migration(session),
         "classifier": _check_classifier(),
+        "memory": await get_memory_status(),
     }
     ready = not any(state in _HARD_FAIL_STATES for state in checks.values())
     body = {"status": "ok" if ready else "degraded", **checks}

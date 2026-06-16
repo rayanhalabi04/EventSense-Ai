@@ -46,6 +46,9 @@ class EscalationService:
         self,
         payload: EscalationCreate,
         ctx: TenantContext,
+        *,
+        source_type: str | None = None,
+        source_message_id: UUID | None = None,
     ) -> Escalation:
         await self._get_tenant_conversation_or_403(payload.conversation_id, ctx)
         message = await self._get_valid_message(payload.message_id, payload.conversation_id, ctx)
@@ -63,6 +66,8 @@ class EscalationService:
             ai_summary=payload.ai_summary,
             suggested_next_step=payload.suggested_next_step,
             status=payload.status,
+            source_type=source_type,
+            source_message_id=source_message_id,
             resolved_at=datetime.now(timezone.utc)
             if payload.status == EscalationStatus.resolved
             else None,
@@ -89,6 +94,73 @@ class EscalationService:
                 details=_audit_details(escalation, ctx.user_id),
             )
 
+        await self.session.commit()
+        await self.session.refresh(escalation)
+        return escalation
+
+    async def create_automated_escalation(
+        self,
+        *,
+        tenant_id: UUID,
+        conversation_id: UUID,
+        message: Message,
+        reason: str,
+        ai_summary: str | None = None,
+        suggested_next_step: str | None = None,
+        source_type: str,
+        source_message_id: UUID,
+    ) -> Escalation:
+        """Create a system-owned escalation from the automated inbound pipeline.
+
+        Unlike :meth:`create_escalation` (staff-confirmed, Spec 012) this path has
+        no authenticated user, so ``created_by_user_id`` is left null. It is
+        idempotent on ``(source_type, source_message_id)`` so a retried webhook
+        never produces a duplicate escalation. The message's intent/risk are
+        snapshotted at creation time.
+        """
+        existing = await self.escalations.find_by_source(
+            tenant_id,
+            source_type=source_type,
+            source_message_id=source_message_id,
+        )
+        if existing is not None:
+            return existing
+
+        escalation = Escalation(
+            tenant_id=tenant_id,
+            conversation_id=conversation_id,
+            message_id=message.id,
+            created_by_user_id=None,
+            assigned_manager_user_id=None,
+            intent_label=message.intent_label,
+            risk_level=message.risk_level,
+            risk_reason=message.risk_reason,
+            ai_summary=ai_summary,
+            suggested_next_step=suggested_next_step,
+            status=EscalationStatus.open,
+            source_type=source_type,
+            source_message_id=source_message_id,
+        )
+        await self.escalations.add(escalation)
+
+        AuditLogService.record(
+            self.session,
+            tenant_id=tenant_id,
+            actor_user_id=None,
+            event_type=AUDIT_EVENT_ESCALATION_CREATED,
+            resource_type="escalation",
+            resource_id=escalation.id,
+            details={
+                "escalation_id": escalation.id,
+                "conversation_id": conversation_id,
+                "message_id": message.id,
+                "intent_label": message.intent_label,
+                "risk_level": message.risk_level,
+                "reason": reason,
+                "source_type": source_type,
+                "automated": True,
+            },
+        )
         await self.session.commit()
         await self.session.refresh(escalation)
         return escalation

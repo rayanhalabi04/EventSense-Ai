@@ -11,6 +11,7 @@ from app.schemas.conversation import (
     ConversationCreate,
     ConversationDetailResponse,
     ConversationRead,
+    ConversationUpdate,
 )
 from app.models.suggested_reply import SuggestedReply
 from app.schemas.suggested_reply import SuggestedReplyGenerateRequest, SuggestedReplyRead
@@ -43,6 +44,16 @@ async def list_conversations(
     session: AsyncSession = Depends(get_async_session),
 ) -> list[Conversation]:
     return await ConversationService(session).list_conversations(ctx)
+
+
+@router.patch("/{conversation_id}", response_model=ConversationRead)
+async def update_conversation(
+    conversation_id: UUID,
+    payload: ConversationUpdate,
+    ctx: TenantContext = Depends(require_role(UserRole.staff, UserRole.manager)),
+    session: AsyncSession = Depends(get_async_session),
+) -> Conversation:
+    return await ConversationService(session).update_conversation(conversation_id, payload, ctx)
 
 
 @router.get("/{conversation_id}/detail", response_model=ConversationDetailResponse)

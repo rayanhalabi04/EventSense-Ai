@@ -1,9 +1,12 @@
+from uuid import UUID
+
 import pytest
 from httpx import AsyncClient
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.audit_log import AuditLog
+from app.models.document import DocumentChunk
 from app.services.conversation_memory_service import ConversationMemoryMessage
 from app.services.llm_service import FakeLLMClient
 from app.services.audit_log_service import (
@@ -106,6 +109,136 @@ async def latest_generated_event(db_session: AsyncSession, reply_id: str) -> Aud
     return next(event for event in events if event.details.get("suggested_reply_id") == reply_id)
 
 
+async def test_e2e_supported_reply_is_grounded_in_tenant_document_and_audited(
+    client: AsyncClient,
+    db_session: AsyncSession,
+):
+    token = await login(client)
+    document = await create_document(
+        client,
+        token,
+        title="Elegant Garden Sparkler Policy",
+        document_type="faq",
+        content_text=(
+            "Sparkler exits are allowed only in the garden courtyard when the couple "
+            "books the safety attendant add-on."
+        ),
+    )
+    simulated = await create_simulator_message(
+        client,
+        token,
+        body="Are sparkler exits allowed in the garden courtyard?",
+    )
+
+    reply = await generate_reply(client, token, simulated["conversation_id"])
+
+    text = reply["suggested_text"].lower()
+    assert reply["answer_supported"] is True
+    assert reply["source_document_ids"] == [document["id"]]
+    assert reply["rag_sources"]
+    assert {source["document_id"] for source in reply["rag_sources"]} == {document["id"]}
+    assert "sparkler exits are allowed only in the garden courtyard" in text
+    assert "safety attendant add-on" in text
+
+    event = await latest_generated_event(db_session, reply["id"])
+    assert event.resource_type == "suggested_reply"
+    assert event.resource_id == reply["id"]
+    assert event.details["conversation_id"] == simulated["conversation_id"]
+    assert event.details["message_id"] == simulated["message_id"]
+    assert event.details["answer_supported"] is True
+    assert event.details["source_document_ids"] == [document["id"]]
+    assert event.details["source_document_titles"] == [document["title"]]
+
+    detail = await client.get(
+        f"/api/v1/conversations/{simulated['conversation_id']}/detail",
+        headers=auth_headers(token),
+    )
+    assert detail.status_code == 200
+    detail_data = detail.json()
+    assert detail_data["suggested_reply"]["id"] == reply["id"]
+    assert detail_data["suggested_reply"]["answer_supported"] is True
+    assert detail_data["rag_sources"]
+    assert {source["document_id"] for source in detail_data["rag_sources"]} == {document["id"]}
+
+
+async def test_e2e_unsupported_reply_refuses_without_sources_and_audits_refusal(
+    client: AsyncClient,
+    db_session: AsyncSession,
+):
+    token = await login(client)
+    await create_document(
+        client,
+        token,
+        title="Elegant Deposit Policy",
+        document_type="deposit_policy",
+        content_text="The booking deposit is non-refundable after booking confirmation.",
+    )
+    simulated = await create_simulator_message(
+        client,
+        token,
+        body="Can you book our honeymoon flight to Paris?",
+    )
+
+    reply = await generate_reply(client, token, simulated["conversation_id"])
+
+    text = reply["suggested_text"].lower()
+    assert reply["answer_supported"] is False
+    assert reply["refusal_reason"] is not None
+    assert reply["source_document_ids"] == []
+    assert reply["rag_sources"] == []
+    assert "could not find enough information" in text
+    assert "uploaded company documents" in text
+    assert "flight to paris" not in text
+    assert "non-refundable" not in text
+
+    events = await audit_events(db_session, AUDIT_EVENT_SUGGESTED_REPLY_REFUSED_NO_SOURCE)
+    event = next(event for event in events if event.details.get("suggested_reply_id") == reply["id"])
+    assert event.resource_type == "suggested_reply"
+    assert event.resource_id == reply["id"]
+    assert event.details["answer_supported"] is False
+    assert event.details["source_document_ids"] == []
+    assert event.details["refusal_reason"] is not None
+
+
+async def test_e2e_cross_tenant_suggested_reply_does_not_use_other_tenant_sources(
+    client: AsyncClient,
+):
+    elegant_token = await login(client)
+    royal_token = await login_royal(client)
+    elegant_document = await create_document(
+        client,
+        elegant_token,
+        title="Elegant Candle Rules",
+        document_type="faq",
+        content_text="Candles are allowed only inside glass holders in the ballroom.",
+    )
+    royal_document = await create_document(
+        client,
+        royal_token,
+        title="Royal Orchid Dome Policy",
+        document_type="faq",
+        content_text=(
+            "Orchid dome ceiling lighting is included only in the Royal Signature "
+            "package."
+        ),
+    )
+    simulated = await create_simulator_message(
+        client,
+        elegant_token,
+        body="Is orchid dome ceiling lighting included in our package?",
+    )
+
+    reply = await generate_reply(client, elegant_token, simulated["conversation_id"])
+
+    assert reply["answer_supported"] is False
+    assert reply["source_document_ids"] == []
+    assert reply["rag_sources"] == []
+    assert royal_document["id"] not in reply["source_document_ids"]
+    assert elegant_document["id"] not in reply["source_document_ids"]
+    assert "orchid dome ceiling lighting is included" not in reply["suggested_text"].lower()
+    assert "royal signature" not in reply["suggested_text"].lower()
+
+
 async def test_generate_reply_for_elegant_deposit_question(
     client: AsyncClient,
     db_session: AsyncSession,
@@ -135,6 +268,75 @@ async def test_generate_reply_for_elegant_deposit_question(
     # The generated audit event records the answering document.
     events = await audit_events(db_session, AUDIT_EVENT_SUGGESTED_REPLY_GENERATED)
     assert any(e.details.get("suggested_reply_id") == reply["id"] for e in events)
+
+
+async def test_multi_chunk_document_is_deduped_to_single_source(
+    client: AsyncClient,
+    db_session: AsyncSession,
+):
+    """A document that chunks into several pieces appears once in rag_sources.
+
+    The deposit text below is long enough (and keyword-dense enough) that
+    chunking produces multiple matching chunks for one document. The reply must
+    still cite that document exactly once, with unique source_document_ids.
+    """
+    token = await login(client)
+    long_deposit_text = (
+        "The booking deposit reserves your wedding date with our planning team. "
+        "The booking deposit is non-refundable after booking confirmation. "
+        "Once booking confirmation is issued, the booking deposit is non-refundable "
+        "because we immediately begin reserving vendors for your event. "
+        "Our deposit policy clearly states that the booking deposit is non-refundable "
+        "after booking confirmation has been completed by both parties. "
+        "Couples should budget knowing the booking deposit is non-refundable after "
+        "booking confirmation, regardless of later changes to the guest list. "
+        "We confirm once more that after booking confirmation the booking deposit "
+        "remains non-refundable for the reserved wedding date. "
+        "The remaining balance is due sixty days before the wedding, and is separate "
+        "from the non-refundable booking deposit collected at booking confirmation. "
+        "Please contact our planning team with any question about the booking deposit "
+        "or the booking confirmation timeline for your wedding."
+    )
+    document = await create_document(
+        client,
+        token,
+        title="Elegant Deposit Policy (Detailed)",
+        document_type="deposit_policy",
+        content_text=long_deposit_text,
+    )
+
+    # Sanity: the document really does index into multiple chunks, so dedup is
+    # actually exercised (otherwise this test would pass trivially).
+    chunk_count = await db_session.scalar(
+        select(func.count())
+        .select_from(DocumentChunk)
+        .where(DocumentChunk.document_id == UUID(document["id"]))
+    )
+    assert chunk_count >= 2
+
+    simulated = await create_simulator_message(
+        client, token, body="Is the deposit refundable after booking confirmation?"
+    )
+    reply = await generate_reply(client, token, simulated["conversation_id"])
+
+    assert reply["answer_supported"] is True
+    # One source for the one document, even though several chunks were retrieved.
+    document_ids = [source["document_id"] for source in reply["rag_sources"]]
+    assert document_ids == [document["id"]]
+    assert len(document_ids) == len(set(document_ids))
+    assert reply["source_document_ids"] == [document["id"]]
+    # Grounded text behaviour is unchanged.
+    assert "non-refundable after booking confirmation" in reply["suggested_text"].lower()
+
+    # Conversation detail reads the stored (deduped) sources too.
+    detail = await client.get(
+        f"/api/v1/conversations/{simulated['conversation_id']}/detail",
+        headers=auth_headers(token),
+    )
+    assert detail.status_code == 200
+    detail_ids = [source["document_id"] for source in detail.json()["rag_sources"]]
+    assert detail_ids == [document["id"]]
+    assert len(detail_ids) == len(set(detail_ids))
 
 
 async def test_llm_enabled_success_creates_llm_suggestion(
@@ -173,6 +375,7 @@ async def test_llm_enabled_success_creates_llm_suggestion(
 
 async def test_suggested_reply_loads_recent_memory_for_llm_prompt(
     client: AsyncClient,
+    db_session: AsyncSession,
     monkeypatch: pytest.MonkeyPatch,
 ):
     fake = FakeLLMClient(
@@ -213,6 +416,8 @@ async def test_suggested_reply_loads_recent_memory_for_llm_prompt(
     assert fake.requests[0].conversation_memory[0]["body"] == (
         "Earlier I asked whether the garden venue is available."
     )
+    event = await latest_generated_event(db_session, reply["id"])
+    assert event.details["memory_message_count"] == 1
 
 
 async def test_llm_disabled_uses_template_fallback(
@@ -475,8 +680,8 @@ async def test_suggested_reply_redacts_pii_from_stored_rag_sources(
     reply = await generate_reply(client, token, simulated["conversation_id"])
 
     assert reply["answer_supported"] is True
-    assert "<EMAIL>" in reply["rag_sources"][0]["content"]
-    assert "<PHONE>" in reply["rag_sources"][0]["content"]
+    assert "[REDACTED_EMAIL]" in reply["rag_sources"][0]["content"]
+    assert "[REDACTED_PHONE]" in reply["rag_sources"][0]["content"]
     assert "billing@example.com" not in reply["rag_sources"][0]["content"]
     events = await audit_events(db_session, AUDIT_EVENT_GUARDRAIL_RETRIEVAL_REDACTED)
     assert any(e.details.get("suggested_reply_id") == reply["id"] for e in events)
@@ -562,6 +767,33 @@ async def test_high_risk_cancellation_reply_includes_escalation_wording(
     assert reply["answer_supported"] is True
     assert "manager" in text
     assert "escalate" in text
+
+
+async def test_complaint_without_manager_uses_specific_review_draft_without_sources(
+    client: AsyncClient,
+):
+    token = await login(client)
+    simulated = await create_simulator_message(
+        client,
+        token,
+        body=(
+            "I'm really disappointed with the decoration sample. It does not "
+            "look like what we agreed on at all."
+        ),
+    )
+
+    reply = await generate_reply(client, token, simulated["conversation_id"])
+
+    text = reply["suggested_text"].lower()
+    assert reply["answer_supported"] is False
+    assert reply["rag_sources"] == []
+    assert "could not find enough information" not in text
+    assert "sorry" in text or "understand" in text
+    assert "decoration" in text
+    assert "review" in text
+    assert "follow up" in text
+    for unsafe in ("we will refund", "we guarantee", "we admit", "we will definitely fix"):
+        assert unsafe not in text
 
 
 async def test_conversation_detail_includes_latest_suggested_reply(

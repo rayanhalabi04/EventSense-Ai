@@ -1,7 +1,10 @@
 import { api } from "@/lib/api";
 import type {
+  AgentDecision,
   AuditLog,
   ConversationDetail,
+  ConversationItem,
+  ConversationStatus,
   DocumentItem,
   DocumentType,
   Escalation,
@@ -135,6 +138,45 @@ export function useGenerateReply(conversationId: string) {
   });
 }
 
+/**
+ * Run the dry-run focused agent for a message. This is read-only: the endpoint
+ * accepts `apply=false` only and creates no tasks or escalations, so there is
+ * nothing to invalidate. The recommendation is returned and displayed as-is.
+ */
+export function useRunAgentAnalysis(conversationId: string) {
+  return useMutation({
+    mutationFn: (messageId: string) =>
+      api.post<AgentDecision>(`/api/v1/conversations/${conversationId}/agent/run`, {
+        message_id: messageId,
+        apply: false,
+      }),
+  });
+}
+
+/**
+ * Apply an agent recommendation. Calls the same endpoint with `apply=true`,
+ * which creates (or reuses) the recommended task and/or escalation server-side.
+ * It still sends no client message and approves/sends no reply. On success the
+ * conversation, tasks, escalations, and inbox views are refreshed so the newly
+ * created records appear.
+ */
+export function useApplyAgentRecommendation(conversationId: string) {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (messageId: string) =>
+      api.post<AgentDecision>(`/api/v1/conversations/${conversationId}/agent/run`, {
+        message_id: messageId,
+        apply: true,
+      }),
+    onSuccess: () => {
+      void client.invalidateQueries({ queryKey: queryKeys.conversation(conversationId) });
+      void client.invalidateQueries({ queryKey: ["tasks"] });
+      void client.invalidateQueries({ queryKey: ["escalations"] });
+      void client.invalidateQueries({ queryKey: ["inbox"] });
+    },
+  });
+}
+
 export function useUpdateReply(conversationId: string) {
   const invalidate = useInvalidateConversation(conversationId);
   return useMutation({
@@ -148,6 +190,15 @@ export function useUpdateReply(conversationId: string) {
       suggested_text?: string;
     }) =>
       api.patch<SuggestedReply>(`/api/v1/suggested-replies/${replyId}`, { status, suggested_text }),
+    onSuccess: invalidate,
+  });
+}
+
+export function useUpdateConversation(conversationId: string) {
+  const invalidate = useInvalidateConversation(conversationId);
+  return useMutation({
+    mutationFn: ({ status }: { status: ConversationStatus }) =>
+      api.patch<ConversationItem>(`/api/v1/conversations/${conversationId}`, { status }),
     onSuccess: invalidate,
   });
 }

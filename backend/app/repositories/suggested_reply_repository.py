@@ -46,6 +46,22 @@ class SuggestedReplyRepository:
         )
         return result.scalars().first()
 
+    async def latest_for_message(
+        self,
+        tenant_id: UUID,
+        message_id: UUID,
+    ) -> SuggestedReply | None:
+        result = await self.session.execute(
+            select(SuggestedReply)
+            .where(
+                SuggestedReply.tenant_id == tenant_id,
+                SuggestedReply.message_id == message_id,
+            )
+            .order_by(SuggestedReply.created_at.desc(), SuggestedReply.id.desc())
+            .limit(1)
+        )
+        return result.scalars().first()
+
     async def add(self, reply: SuggestedReply) -> SuggestedReply:
         self.session.add(reply)
         await self.session.flush()

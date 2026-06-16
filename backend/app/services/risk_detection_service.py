@@ -70,17 +70,49 @@ GUEST_COUNT_TERMS = (
     "extra guests",
     "headcount",
     "people attending",
+    "add guests",
+    "increase guests",
+    "increase the guest count",
+    "venue capacity",
+    "catering capacity",
+    "seating capacity",
 )
 PAYMENT_TERMS = ("payment", "deposit", "invoice", "paid", "charge", "refund")
 CANCELLATION_TERMS = ("cancel", "cancellation", "call off")
-COMPLAINT_TERMS = ("complaint", "complain", "unhappy", "upset", "disappointed", "bad service")
+COMPLAINT_TERMS = (
+    "complaint",
+    "complain",
+    "unhappy",
+    "upset",
+    "disappointed",
+    "bad service",
+    "unacceptable",
+)
 HUMAN_ESCALATION_TERMS = ("human", "manager", "supervisor", "agent", "person")
+EXPLICIT_HUMAN_ESCALATION_PHRASES = (
+    "speak to a manager",
+    "talk to a manager",
+    "manager now",
+    "call me now",
+    "human",
+)
 UNCLEAR_TERMS = ("unclear", "confused", "not sure", "unsupported", "doesn't make sense")
 
 
 def detect_message_risk(text: str, intent_label: str | None) -> RiskAssessment:
     normalized = text.lower()
     label = intent_label or "other"
+
+    has_payment_risk = label == "payment_issue" or _contains_any(normalized, PAYMENT_TERMS)
+    has_explicit_human_escalation = (
+        label == "human_escalation" or _contains_any(normalized, EXPLICIT_HUMAN_ESCALATION_PHRASES)
+    )
+    if has_payment_risk and has_explicit_human_escalation:
+        return RiskAssessment(
+            level=RISK_LEVEL_HIGH,
+            flags=[RISK_FLAG_PAYMENT_RISK, RISK_FLAG_HUMAN_ESCALATION_NEEDED],
+            reason="Payment issue includes an explicit request for human or manager escalation.",
+        )
 
     if label == "complaint" or _contains_any(normalized, COMPLAINT_TERMS):
         return RiskAssessment(
@@ -96,7 +128,7 @@ def detect_message_risk(text: str, intent_label: str | None) -> RiskAssessment:
             reason="Message indicates the client may cancel the booking.",
         )
 
-    if label == "payment_issue" or _contains_any(normalized, PAYMENT_TERMS):
+    if has_payment_risk:
         high_payment_terms = URGENT_TERMS + ANGRY_TERMS + UNCONFIRMED_PAYMENT_TERMS
         is_high = _contains_any(normalized, high_payment_terms)
         return RiskAssessment(

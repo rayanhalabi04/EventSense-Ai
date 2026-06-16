@@ -27,6 +27,11 @@ class Escalation(TimestampMixin, Base):
             "tenant_id",
             "assigned_manager_user_id",
         ),
+        Index(
+            "ix_escalations_tenant_id_source_message_id",
+            "tenant_id",
+            "source_message_id",
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
@@ -39,8 +44,10 @@ class Escalation(TimestampMixin, Base):
     message_id: Mapped[UUID | None] = mapped_column(
         Uuid(as_uuid=True), ForeignKey("messages.id", ondelete="SET NULL"), nullable=True
     )
-    created_by_user_id: Mapped[UUID] = mapped_column(
-        Uuid(as_uuid=True), ForeignKey("users.id"), nullable=False
+    # Nullable so automated inbound processing (e.g. the Telegram pipeline) can
+    # create a system-owned escalation with no authenticated user.
+    created_by_user_id: Mapped[UUID | None] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("users.id"), nullable=True
     )
     assigned_manager_user_id: Mapped[UUID | None] = mapped_column(
         Uuid(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
@@ -56,6 +63,10 @@ class Escalation(TimestampMixin, Base):
         default=EscalationStatus.open,
     )
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Provenance for idempotency. "agent" marks an agent-created record; NULL for
+    # human/UI-created. source_message_id is a plain dedup marker (no FK).
+    source_type: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    source_message_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True), nullable=True)
 
     conversation = relationship("Conversation", back_populates="escalations")
     message = relationship("Message", foreign_keys=[message_id])

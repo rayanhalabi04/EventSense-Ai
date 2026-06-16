@@ -11,7 +11,7 @@ async def test_health_returns_ok_with_subsystem_checks(client: AsyncClient) -> N
 
     # Overall readiness plus each subsystem state is reported.
     assert body["status"] == "ok"
-    for key in ("db", "pgvector", "migration", "classifier"):
+    for key in ("db", "pgvector", "migration", "classifier", "memory"):
         assert key in body
 
     # On the sqlite test bind, pg-only checks are skipped (not failed);
@@ -20,6 +20,7 @@ async def test_health_returns_ok_with_subsystem_checks(client: AsyncClient) -> N
     assert body["pgvector"] == "skipped"
     assert body["migration"] == "skipped"
     assert body["classifier"] == "loaded"
+    assert body["memory"] == "disabled"
 
 
 @pytest.mark.asyncio

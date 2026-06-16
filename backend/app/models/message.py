@@ -42,6 +42,7 @@ class Message(Base):
     )
     body: Mapped[str] = mapped_column(Text, nullable=False)
     source: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    external_message_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     intent_label: Mapped[str | None] = mapped_column(String(40), nullable=True)
     intent_confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
     classified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

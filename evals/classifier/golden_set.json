@@ -1,0 +1,200 @@
+[
+  {
+    "id": "booking_inquiry_001",
+    "text": "Hi, we want to book your team for our wedding next May. Can we start the booking?",
+    "expected_label": "booking_inquiry",
+    "scenario": "new couple asks to book"
+  },
+  {
+    "id": "booking_inquiry_002",
+    "text": "Can I reserve your planning services for our engagement dinner?",
+    "expected_label": "booking_inquiry",
+    "scenario": "client wants to reserve services"
+  },
+  {
+    "id": "booking_inquiry_003",
+    "text": "We are ready to make a reservation for the ballroom package.",
+    "expected_label": "booking_inquiry",
+    "scenario": "reservation request"
+  },
+  {
+    "id": "pricing_request_001",
+    "text": "How much does the gold wedding package cost for 150 guests?",
+    "expected_label": "pricing_request",
+    "scenario": "package cost question"
+  },
+  {
+    "id": "pricing_request_002",
+    "text": "Please send your pricing and quote for a full wedding planning package.",
+    "expected_label": "pricing_request",
+    "scenario": "pricing quote request"
+  },
+  {
+    "id": "pricing_request_003",
+    "text": "What is the price difference between your classic and premium packages?",
+    "expected_label": "pricing_request",
+    "scenario": "package price comparison"
+  },
+  {
+    "id": "availability_question_001",
+    "text": "Are you available on June 14 for a wedding in Beirut?",
+    "expected_label": "availability_question",
+    "scenario": "date availability"
+  },
+  {
+    "id": "availability_question_002",
+    "text": "Is that date open for a ceremony and reception?",
+    "expected_label": "availability_question",
+    "scenario": "open date question"
+  },
+  {
+    "id": "availability_question_003",
+    "text": "Do you have availability for the first weekend of September?",
+    "expected_label": "availability_question",
+    "scenario": "weekend availability"
+  },
+  {
+    "id": "service_question_001",
+    "text": "What services do you offer for destination weddings?",
+    "expected_label": "service_question",
+    "scenario": "service list question"
+  },
+  {
+    "id": "service_question_002",
+    "text": "Is decoration included in your planning service?",
+    "expected_label": "service_question",
+    "scenario": "included service question"
+  },
+  {
+    "id": "service_question_003",
+    "text": "Can you explain the catering options included with the package?",
+    "expected_label": "service_question",
+    "scenario": "service options question"
+  },
+  {
+    "id": "urgent_change_001",
+    "text": "Urgent: we need to change the time of tomorrow's ceremony.",
+    "expected_label": "urgent_change",
+    "scenario": "urgent schedule change"
+  },
+  {
+    "id": "urgent_change_002",
+    "text": "Please reply asap, the couple wants a last minute change to the entrance plan.",
+    "expected_label": "urgent_change",
+    "scenario": "last-minute event change"
+  },
+  {
+    "id": "urgent_change_003",
+    "text": "This is an emergency for tonight's setup, can we change the timeline right now?",
+    "expected_label": "urgent_change",
+    "scenario": "same-day timeline emergency"
+  },
+  {
+    "id": "guest_count_change_001",
+    "text": "Our guest count changed from 120 to 145 people.",
+    "expected_label": "guest_count_change",
+    "scenario": "guest count update"
+  },
+  {
+    "id": "guest_count_change_002",
+    "text": "We have more guests than expected and need to update the number of guests.",
+    "expected_label": "guest_count_change",
+    "scenario": "more guests"
+  },
+  {
+    "id": "guest_count_change_003",
+    "text": "Can we reduce the headcount because fewer guests are attending?",
+    "expected_label": "guest_count_change",
+    "scenario": "fewer guests"
+  },
+  {
+    "id": "complaint_001",
+    "text": "I am unhappy with the bad service from your coordination team.",
+    "expected_label": "complaint",
+    "scenario": "service complaint"
+  },
+  {
+    "id": "complaint_002",
+    "text": "We are very disappointed with the decoration setup.",
+    "expected_label": "complaint",
+    "scenario": "decoration complaint"
+  },
+  {
+    "id": "complaint_003",
+    "text": "This is a complaint about the terrible communication yesterday.",
+    "expected_label": "complaint",
+    "scenario": "communication complaint"
+  },
+  {
+    "id": "cancellation_request_001",
+    "text": "We need to cancel our wedding booking.",
+    "expected_label": "cancellation_request",
+    "scenario": "cancel booking"
+  },
+  {
+    "id": "cancellation_request_002",
+    "text": "Can you explain the cancellation process for our event?",
+    "expected_label": "cancellation_request",
+    "scenario": "cancellation process"
+  },
+  {
+    "id": "cancellation_request_003",
+    "text": "The family wants to call off the reception reservation.",
+    "expected_label": "cancellation_request",
+    "scenario": "call off reception"
+  },
+  {
+    "id": "payment_issue_001",
+    "text": "Our payment failed but the invoice still shows a balance.",
+    "expected_label": "payment_issue",
+    "scenario": "failed payment"
+  },
+  {
+    "id": "payment_issue_002",
+    "text": "I paid the deposit but it is not confirmed on my account.",
+    "expected_label": "payment_issue",
+    "scenario": "deposit not confirmed"
+  },
+  {
+    "id": "payment_issue_003",
+    "text": "There is a charge issue on the second installment invoice.",
+    "expected_label": "payment_issue",
+    "scenario": "invoice charge issue"
+  },
+  {
+    "id": "human_escalation_001",
+    "text": "Please connect me with a human from your team.",
+    "expected_label": "human_escalation",
+    "scenario": "asks for human"
+  },
+  {
+    "id": "human_escalation_002",
+    "text": "I want a manager to review this conversation.",
+    "expected_label": "human_escalation",
+    "scenario": "asks for manager"
+  },
+  {
+    "id": "human_escalation_003",
+    "text": "Can a supervisor call us before we decide?",
+    "expected_label": "human_escalation",
+    "scenario": "asks for supervisor"
+  },
+  {
+    "id": "other_001",
+    "text": "Thank you, that sounds good.",
+    "expected_label": "other",
+    "scenario": "simple acknowledgement"
+  },
+  {
+    "id": "other_002",
+    "text": "I will ask my fiance and get back to you later.",
+    "expected_label": "other",
+    "scenario": "client postpones decision"
+  },
+  {
+    "id": "other_003",
+    "text": "Noted, we saw your message.",
+    "expected_label": "other",
+    "scenario": "neutral response"
+  }
+]

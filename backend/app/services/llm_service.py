@@ -6,6 +6,7 @@ from typing import Protocol
 import httpx
 
 from app.core.config import settings
+from app.services.guardrail_service import redact_pii
 
 
 @dataclass(frozen=True)
@@ -51,7 +52,7 @@ class OpenAIChatClient:
                 {"role": "user", "content": _user_prompt(request)},
             ],
             "temperature": 0.2,
-            "max_tokens": 350,
+            "max_tokens": 800,
         }
         async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
             response = await client.post(
@@ -93,7 +94,7 @@ class GeminiClient:
             ],
             "generationConfig": {
                 "temperature": 0.2,
-                "maxOutputTokens": 350,
+                "maxOutputTokens": 800,
             },
         }
         async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
@@ -154,12 +155,26 @@ def get_llm_client() -> LLMClient | None:
 
 def _system_prompt() -> str:
     return (
-        "You draft suggested replies for EventSense AI staff review only. "
+        "You are the client-facing assistant for EventSense AI, a wedding and event agency. "
+        "Your reply is delivered directly to the client, so write it as a warm, professional "
+        "message addressed to them. "
         "Use only the provided tenant document sources. Do not invent policy details, prices, "
         "dates, exceptions, availability, or commitments that are not supported by the sources. "
-        "If the sources do not support an answer, say staff should review the question instead. "
-        "Write a concise, friendly client-facing draft and make clear that staff must review it "
-        "before sending."
+        "If the sources do not support a confident answer, reassure the client and let them know "
+        "a member of our team will follow up. "
+        "For sensitive matters (cancellations, refunds, payments, complaints), answer carefully "
+        "from the sources and, where appropriate, mention that a member of our team will review "
+        "their booking and follow up. "
+        "Keep the message short and mobile-friendly — a few sentences at most. For pricing or "
+        "package questions, summarize only the main packages by name, price, and guest limit; do "
+        "not list every add-on, overtime fee, or fine-print detail unless the client specifically "
+        "asks for it. "
+        "Always write complete sentences and finish every sentence — never stop mid-sentence or "
+        "leave a dangling clause. End the message with proper punctuation. "
+        "End the message with: \"A member of our team can help you choose the best option based on "
+        "your event needs.\" "
+        "Never mention drafts, internal notes, staff review, approval, or that the reply was sent "
+        "automatically. Do not include source citations or labels — phrase any details naturally."
     )
 
 
@@ -171,7 +186,7 @@ def _user_prompt(request: LLMReplyRequest) -> str:
                 [
                     f"Source {index}: {source.get('document_title', 'Untitled')}",
                     f"Type: {source.get('document_type', '')}",
-                    f"Content: {source.get('content', '')}",
+                    f"Content: {redact_pii(str(source.get('content', '')))}",
                 ]
             )
         )
@@ -181,19 +196,19 @@ def _user_prompt(request: LLMReplyRequest) -> str:
             "\n".join(
                 [
                     f"Message {index} ({message.get('direction', 'unknown')}):",
-                    str(message.get("body", "")),
+                    redact_pii(str(message.get("body", ""))),
                 ]
             )
         )
     return "\n\n".join(
         [
-            f"Client message:\n{request.client_message}",
+            f"Client message:\n{redact_pii(request.client_message)}",
             f"Detected intent: {request.intent_label or 'unknown'}",
             f"Risk level: {request.risk_level or 'unknown'}",
-            f"Risk reason: {request.risk_reason or 'none'}",
+            f"Risk reason: {redact_pii(request.risk_reason or 'none')}",
             "Recent conversation memory:\n"
             + ("\n\n".join(memory_blocks) if memory_blocks else "No recent memory available."),
             "Tenant document sources:\n" + "\n\n".join(source_blocks),
-            "Draft one suggested reply using only these sources. The reply is not sent automatically; staff must review it before sending.",
+            "Write one reply to the client using only these sources. Address the client directly in a warm, professional tone, and do not mention drafts, staff review, or approval.",
         ]
     )

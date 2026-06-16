@@ -31,7 +31,11 @@ class EscalationRead(BaseModel):
     tenant_id: UUID
     conversation_id: UUID
     message_id: UUID | None
-    created_by_user_id: UUID
+    # Nullable: automated inbound processing (e.g. the Telegram pipeline) creates
+    # system-owned escalations with no authenticated user. The DB column is
+    # nullable to match, so this serializer must accept None or it raises a
+    # ValidationError (HTTP 500) when reading such a conversation's detail.
+    created_by_user_id: UUID | None
     assigned_manager_user_id: UUID | None
     intent_label: str | None
     risk_level: str | None
