@@ -68,6 +68,7 @@ async def send_telegram_reply(
             conversation_id=conversation_id,
             text=payload.text,
             ctx=ctx,
+            suggested_reply_id=payload.suggested_reply_id,
         )
     except TelegramApiError as exc:
         raise HTTPException(

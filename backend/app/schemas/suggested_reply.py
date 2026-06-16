@@ -59,6 +59,8 @@ class SuggestedReplyRead(BaseModel):
     answer_supported: bool
     refusal_reason: str | None
     generation_method: str
+    auto_sent_at: datetime | None = None
+    sent_channel: str | None = None
     created_by_user_id: UUID | None
     approved_by_user_id: UUID | None
     created_at: datetime

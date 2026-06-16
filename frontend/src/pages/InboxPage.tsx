@@ -9,6 +9,7 @@ import { PageLoader } from '../components/ui/LoadingSpinner'
 import { EmptyState } from '../components/ui/EmptyState'
 import { ErrorState } from '../components/ui/ErrorState'
 import { formatRelative } from '../utils/date'
+import { inboxRowDetailPath } from '../utils/routes'
 import type { ConversationStatus } from '../types'
 
 const STATUS_TABS: { label: string; value: ConversationStatus | undefined }[] = [
@@ -148,7 +149,7 @@ export function InboxPage() {
                 transition={{ delay: i * 0.03 }}
               >
                 <Link
-                  to={`/inbox/${conv.conversation_id}`}
+                  to={inboxRowDetailPath(conv)}
                   className="flex items-center gap-4 px-5 py-4 hover:bg-surface-warm transition-colors"
                 >
                   {/* Avatar */}

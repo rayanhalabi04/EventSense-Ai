@@ -2,23 +2,35 @@ import { useState, useRef, useEffect } from 'react'
 import { useParams, Link } from 'react-router-dom'
 import { AnimatePresence, m } from 'framer-motion'
 import {
-  ArrowLeft, Send, Sparkles, CheckCircle, XCircle, Clock,
+  ArrowLeft, Send, Sparkles, CheckCircle, XCircle, Clock, CheckCheck,
 } from 'lucide-react'
-import { useConversationDetail, useSendMessage, useGenerateReply } from '../hooks/useConversations'
+import {
+  useConversationDetail,
+  useSendMessage,
+  useGenerateReply,
+  useSendTelegramReply,
+  useDismissSuggestedReply,
+} from '../hooks/useConversations'
 import { RiskBadge, TaskStatusBadge, EscalationStatusBadge } from '../components/ui/Badge'
 import { PageLoader } from '../components/ui/LoadingSpinner'
 import { ErrorState } from '../components/ui/ErrorState'
 import { formatDateTime, formatRelative } from '../utils/date'
+import { getSuggestedReplyCardState, isAutoReplyMessage } from '../utils/suggestedReply'
+import { apiErrorDetail } from '../utils/apiError'
+import type { SuggestedReply } from '../types'
 
 export function ConversationDetailPage() {
   const { conversationId } = useParams<{ conversationId: string }>()
   const [message, setMessage] = useState('')
   const [activeTab, setActiveTab] = useState<'tasks' | 'escalations' | 'audit'>('tasks')
+  const [replyError, setReplyError] = useState<string | null>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
 
   const detail = useConversationDetail(conversationId ?? '')
   const sendMessage = useSendMessage(conversationId ?? '')
   const generateReply = useGenerateReply(conversationId ?? '')
+  const sendTelegramReply = useSendTelegramReply(conversationId ?? '')
+  const dismissReply = useDismissSuggestedReply(conversationId ?? '')
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -27,7 +39,7 @@ export function ConversationDetailPage() {
   const handleSend = (e: React.FormEvent) => {
     e.preventDefault()
     if (!message.trim()) return
-    sendMessage.mutate({ content: message.trim(), direction: 'outbound' }, {
+    sendMessage.mutate({ body: message.trim(), direction: 'outbound' }, {
       onSuccess: () => setMessage(''),
     })
   }
@@ -35,10 +47,53 @@ export function ConversationDetailPage() {
   const handleGenerateReply = () => generateReply.mutate()
 
   if (detail.isLoading) return <PageLoader />
-  if (detail.isError) return <ErrorState onRetry={detail.refetch} message="Could not load conversation." />
+  if (detail.isError) {
+    // Surface the real status/detail while developing so failures like a 500 on
+    // the detail endpoint are diagnosable instead of a blank "Could not load".
+    const devDetail = import.meta.env.DEV ? apiErrorDetail(detail.error) : undefined
+    return (
+      <ErrorState
+        onRetry={detail.refetch}
+        message="Could not load conversation."
+        detail={devDetail}
+      />
+    )
+  }
 
   const conv = detail.data!
-  const pendingReply = conv.suggested_replies?.find((r) => r.status === 'pending')
+  const messages = conv.messages ?? []
+  // The conversation source isn't a top-level field — take it from whichever
+  // message carries one (e.g. "telegram"/"simulator").
+  const source = messages.find((m) => m.source)?.source ?? 'Unknown source'
+  const isTelegram = messages.some((m) => m.source === 'telegram')
+  // Only a *pending* (draft, not-yet-sent) suggestion needs the action card.
+  // Auto-sent replies are already shown as outbound bubbles in the thread, so we
+  // never render a separate card for them.
+  const reply = conv.suggested_reply
+  const replyCard = getSuggestedReplyCardState(reply)
+  const pendingReply = replyCard.kind === 'pending' ? reply : null
+
+  const handleUseReply = (pending: SuggestedReply) => {
+    setReplyError(null)
+    if (isTelegram) {
+      // Actually deliver it to the Telegram client and mark the suggestion used.
+      sendTelegramReply.mutate(
+        { text: pending.suggested_text, suggested_reply_id: pending.id },
+        {
+          onError: (err) =>
+            setReplyError(apiErrorDetail(err) ?? 'Failed to send reply to Telegram.'),
+        },
+      )
+    } else {
+      // Non-Telegram conversations: keep existing behavior (load into the box).
+      setMessage(pending.suggested_text)
+    }
+  }
+
+  const handleDismissReply = (pending: SuggestedReply) => {
+    setReplyError(null)
+    dismissReply.mutate(pending.id)
+  }
 
   return (
     <div className="h-[calc(100vh-4rem)] flex flex-col">
@@ -49,10 +104,10 @@ export function ConversationDetailPage() {
         </Link>
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2">
-            <h1 className="text-lg font-semibold text-text-primary truncate">{conv.client_name}</h1>
-            <RiskBadge level={conv.risk_level} />
+            <h1 className="text-lg font-semibold text-text-primary truncate">{conv.client_name || 'Unknown client'}</h1>
+            {conv.latest_risk_level && <RiskBadge level={conv.latest_risk_level} />}
           </div>
-          <p className="text-xs text-text-muted">{conv.source} &middot; {conv.message_count} messages &middot; {conv.status}</p>
+          <p className="text-xs text-text-muted">{source} &middot; {messages.length} messages &middot; {conv.conversation_status}</p>
         </div>
       </div>
 
@@ -61,45 +116,60 @@ export function ConversationDetailPage() {
         <div className="flex-1 flex flex-col card overflow-hidden">
           {/* Messages scroll area */}
           <div className="flex-1 overflow-y-auto p-4 space-y-3">
-            {conv.messages?.map((msg) => (
-              <m.div
-                key={msg.id}
-                initial={{ opacity: 0, y: 8 }}
-                animate={{ opacity: 1, y: 0 }}
-                className={`flex ${msg.direction === 'outbound' ? 'justify-end' : 'justify-start'}`}
-              >
-                <div
-                  className={`max-w-[75%] rounded-xl px-4 py-2.5 ${
-                    msg.direction === 'outbound'
-                      ? 'bg-primary text-white rounded-br-sm'
-                      : 'bg-surface-warm border border-border text-text-body rounded-bl-sm'
-                  }`}
+            {messages.length === 0 ? (
+              <div className="h-full flex items-center justify-center">
+                <p className="text-sm text-text-muted">No messages in this conversation yet.</p>
+              </div>
+            ) : (
+              messages.map((msg) => (
+                <m.div
+                  key={msg.id}
+                  initial={{ opacity: 0, y: 8 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  className={`flex ${msg.direction === 'outbound' ? 'justify-end' : 'justify-start'}`}
                 >
-                  {msg.intent && msg.direction === 'inbound' && (
-                    <div className="flex items-center gap-1 mb-1">
-                      <span className="text-[9px] font-semibold uppercase tracking-widest text-text-muted">
-                        {msg.intent.replace(/_/g, ' ')}
+                  <div
+                    className={`max-w-[75%] rounded-xl px-4 py-2.5 ${
+                      msg.direction === 'outbound'
+                        ? 'bg-primary text-white rounded-br-sm'
+                        : 'bg-surface-warm border border-border text-text-body rounded-bl-sm'
+                    }`}
+                  >
+                    {msg.intent_label && msg.direction === 'inbound' && (
+                      <div className="flex items-center gap-1 mb-1">
+                        <span className="text-[9px] font-semibold uppercase tracking-widest text-text-muted">
+                          {msg.intent_label.replace(/_/g, ' ')}
+                        </span>
+                      </div>
+                    )}
+                    <p className={`text-sm leading-relaxed whitespace-pre-wrap ${msg.body ? '' : 'italic opacity-60'}`}>
+                      {msg.body || 'No message body'}
+                    </p>
+                    {isAutoReplyMessage(msg) && (
+                      <span className="mt-1 inline-flex items-center gap-1 text-[9px] font-semibold uppercase tracking-wide text-white/70">
+                        <CheckCheck className="w-3 h-3" />
+                        Auto-replied via Telegram
                       </span>
-                    </div>
-                  )}
-                  <p className="text-sm leading-relaxed">{msg.content}</p>
-                  <p className={`text-[10px] mt-1 ${msg.direction === 'outbound' ? 'text-white/50' : 'text-text-muted'}`}>
-                    {formatDateTime(msg.created_at)}
-                  </p>
-                </div>
-              </m.div>
-            ))}
+                    )}
+                    <p className={`text-[10px] mt-1 ${msg.direction === 'outbound' ? 'text-white/50' : 'text-text-muted'}`}>
+                      {formatDateTime(msg.sent_at)}
+                    </p>
+                  </div>
+                </m.div>
+              ))
+            )}
             <div ref={messagesEndRef} />
           </div>
 
-          {/* AI suggested reply */}
+          {/* AI suggested reply — only for a pending draft awaiting human review.
+              Auto-sent replies are already shown as outbound bubbles above. */}
           <AnimatePresence>
             {(pendingReply || generateReply.isPending) && (
               <m.div
                 initial={{ opacity: 0, height: 0 }}
                 animate={{ opacity: 1, height: 'auto' }}
                 exit={{ opacity: 0, height: 0 }}
-                className="border-t border-border bg-accent-soft/50 px-4 py-3"
+                className="border-t border-border px-4 py-3 bg-accent-soft/50"
               >
                 <div className="flex items-center gap-2 mb-2">
                   <Sparkles className="w-3.5 h-3.5 text-accent" />
@@ -112,22 +182,31 @@ export function ConversationDetailPage() {
                   </div>
                 ) : pendingReply ? (
                   <>
-                    <p className="text-sm text-text-body leading-relaxed mb-2">{pendingReply.content}</p>
+                    <p className="text-sm text-text-body leading-relaxed mb-2 whitespace-pre-wrap">{pendingReply.suggested_text}</p>
                     {pendingReply.rag_sources?.length ? (
                       <p className="text-[10px] text-text-muted mb-2">
-                        Based on: {pendingReply.rag_sources.map((s) => s.title).join(', ')}
+                        Based on: {pendingReply.rag_sources.map((s) => s.document_title).join(', ')}
                       </p>
                     ) : null}
-                    <div className="flex gap-2">
+                    {replyError && (
+                      <p className="text-[10px] text-danger mb-2">{replyError}</p>
+                    )}
+                    <div className="flex gap-3">
                       <button
                         type="button"
-                        onClick={() => setMessage(pendingReply.content)}
-                        className="flex items-center gap-1.5 text-xs font-medium text-success hover:text-success/80 transition-colors"
+                        onClick={() => handleUseReply(pendingReply)}
+                        disabled={sendTelegramReply.isPending}
+                        className="flex items-center gap-1.5 text-xs font-medium text-success hover:text-success/80 transition-colors disabled:opacity-50"
                       >
                         <CheckCircle className="w-3.5 h-3.5" />
-                        Use this reply
+                        {sendTelegramReply.isPending && isTelegram ? 'Sending…' : 'Use this reply'}
                       </button>
-                      <button type="button" className="flex items-center gap-1.5 text-xs font-medium text-danger hover:text-danger/80 transition-colors">
+                      <button
+                        type="button"
+                        onClick={() => handleDismissReply(pendingReply)}
+                        disabled={dismissReply.isPending}
+                        className="flex items-center gap-1.5 text-xs font-medium text-danger hover:text-danger/80 transition-colors disabled:opacity-50"
+                      >
                         <XCircle className="w-3.5 h-3.5" />
                         Dismiss
                       </button>
@@ -211,10 +290,10 @@ export function ConversationDetailPage() {
                         <p className="text-xs font-medium text-text-primary leading-snug">{task.title}</p>
                         <TaskStatusBadge status={task.status} />
                       </div>
-                      {task.due_date && (
+                      {task.due_at && (
                         <p className="text-[10px] text-text-muted flex items-center gap-1">
                           <Clock className="w-3 h-3" />
-                          {formatRelative(task.due_date)}
+                          {formatRelative(task.due_at)}
                         </p>
                       )}
                     </div>
@@ -229,10 +308,14 @@ export function ConversationDetailPage() {
                   {conv.escalations?.length ? conv.escalations.map((esc) => (
                     <div key={esc.id} className="p-2.5 bg-surface-warm rounded-lg border border-border">
                       <div className="flex items-start justify-between gap-2 mb-1">
-                        <p className="text-xs font-medium text-text-primary leading-snug">{esc.title}</p>
+                        <p className="text-xs font-medium text-text-primary leading-snug">
+                          {esc.ai_summary || esc.suggested_next_step || 'Escalation'}
+                        </p>
                         <EscalationStatusBadge status={esc.status} />
                       </div>
-                      <p className="text-[10px] text-text-muted capitalize">{esc.severity} severity</p>
+                      {esc.risk_level && (
+                        <p className="text-[10px] text-text-muted capitalize">{esc.risk_level} risk</p>
+                      )}
                     </div>
                   )) : (
                     <p className="text-xs text-text-muted text-center py-4">No escalations for this conversation.</p>
@@ -242,11 +325,11 @@ export function ConversationDetailPage() {
 
               {activeTab === 'audit' && (
                 <div className="space-y-2">
-                  {conv.audit_events?.length ? conv.audit_events.map((ev) => (
+                  {conv.audit_timeline?.length ? conv.audit_timeline.map((ev) => (
                     <div key={ev.id} className="flex gap-2">
                       <div className="w-1.5 h-1.5 rounded-full bg-accent mt-1.5 flex-shrink-0" />
                       <div>
-                        <p className="text-xs text-text-primary">{ev.action}</p>
+                        <p className="text-xs text-text-primary">{ev.event_type.replace(/[._]/g, ' ')}</p>
                         <p className="text-[10px] text-text-muted">{formatDateTime(ev.created_at)}</p>
                       </div>
                     </div>
@@ -263,7 +346,7 @@ export function ConversationDetailPage() {
             <p className="font-semibold text-text-primary mb-2">Details</p>
             <div className="flex justify-between">
               <span className="text-text-muted">Source</span>
-              <span className="text-text-primary font-medium">{conv.source}</span>
+              <span className="text-text-primary font-medium capitalize">{source}</span>
             </div>
             <div className="flex justify-between">
               <span className="text-text-muted">Created</span>
@@ -271,8 +354,30 @@ export function ConversationDetailPage() {
             </div>
             <div className="flex justify-between">
               <span className="text-text-muted">Messages</span>
-              <span className="text-text-primary">{conv.message_count}</span>
+              <span className="text-text-primary">{messages.length}</span>
             </div>
+            <div className="flex justify-between">
+              <span className="text-text-muted">Status</span>
+              <span className="text-text-primary capitalize">{conv.conversation_status ?? 'unknown'}</span>
+            </div>
+            {conv.latest_risk_level && (
+              <div className="flex justify-between">
+                <span className="text-text-muted">Risk</span>
+                <span className="text-text-primary capitalize">{conv.latest_risk_level}</span>
+              </div>
+            )}
+            {conv.latest_intent_label && (
+              <div className="flex justify-between">
+                <span className="text-text-muted">Intent</span>
+                <span className="text-text-primary capitalize">{conv.latest_intent_label.replace(/_/g, ' ')}</span>
+              </div>
+            )}
+            {conv.client_contact && (
+              <div className="flex justify-between">
+                <span className="text-text-muted">Contact</span>
+                <span className="text-text-primary truncate ml-2">{conv.client_contact}</span>
+              </div>
+            )}
           </div>
         </div>
       </div>

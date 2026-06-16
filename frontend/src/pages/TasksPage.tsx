@@ -173,8 +173,8 @@ export function TasksPage() {
                 <div className="flex items-center gap-3 mt-1.5">
                   <TaskStatusBadge status={task.status} />
                   <PriorityBadge priority={task.priority} />
-                  {task.due_date && (
-                    <span className="text-[11px] text-text-muted">Due {formatRelative(task.due_date)}</span>
+                  {task.due_at && (
+                    <span className="text-[11px] text-text-muted">Due {formatRelative(task.due_at)}</span>
                   )}
                 </div>
               </div>

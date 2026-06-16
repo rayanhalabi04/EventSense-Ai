@@ -62,12 +62,70 @@ AUTO_REPLY_RISKY_KEYWORDS = (
     "attorney",
 )
 STAFF_FACING_PREFIX_PATTERNS = (
-    r"^\s*here(?:'|’)?s a draft for staff review\s*:\s*",
+    r"^\s*here(?:'|’)?s a draft[^:]*:\s*",
     r"^\s*draft\s*:\s*",
     r"^\s*suggested reply\s*:\s*",
     r"^\s*you can reply\s*:\s*",
     r"^\s*staff can say\s*:\s*",
     r"^\s*for staff review\s*:?\s*",
+)
+
+# Telegram auto-replies are delivered straight to the client, so any internal
+# "this is a draft / staff must approve" framing the generator added must be
+# removed before sending. We drop whole sentences that contain these markers
+# rather than just leading prefixes, because models often append the disclaimer
+# at the end (e.g. "Staff review required before sending.") or mid-text.
+STAFF_FACING_SENTENCE_MARKERS = (
+    "staff review",
+    "staff must review",
+    "staff should review",
+    "staff will review",
+    "for staff review",
+    "internal review",
+    "internal note",
+    "for internal use",
+    "draft reply",
+    "this is a draft",
+    "a draft for",
+    "draft for staff",
+    "before sending",
+    "needs approval",
+    "need approval",
+    "needs your approval",
+    "requires approval",
+    "pending approval",
+    "no approval needed",
+    "approval needed",
+    "approval required",
+    "sent automatically",
+    "sent to the client automatically",
+)
+
+# Telegram is read on phones, so client replies must stay short. We trim long
+# package detail down to the essentials and append a single warm closing line.
+TELEGRAM_MAX_REPLY_CHARS = 600
+TEAM_HELP_CLOSING = (
+    "A member of our team can help you choose the best option based on your "
+    "event needs."
+)
+# Detail lines clients don't need up front (they can ask, and a team member can
+# walk them through extras). Dropped from the concise Telegram reply only — the
+# dashboard draft keeps the full text.
+ADDON_DETAIL_MARKERS = (
+    "add-on",
+    "add on",
+    "addon",
+    "overtime",
+    "per hour",
+    "per additional",
+    "extra hour",
+    "additional hour",
+    "surcharge",
+    "service charge",
+    "service fee",
+    "corkage",
+    "gratuity",
+    "per extra guest",
 )
 
 
@@ -155,6 +213,12 @@ class TelegramAutoReplyService:
             sent_at=now,
         )
         await MessageRepository(session).add(outbound)
+        # Record on the suggested reply that it was delivered automatically, so the
+        # dashboard shows it as already sent instead of asking staff to approve it
+        # again. Status is left untouched (human approval semantics are unchanged).
+        suggested.auto_sent_at = now
+        suggested.sent_channel = TELEGRAM_SOURCE
+        session.add(suggested)
         AuditLogService.record(
             session,
             tenant_id=message.tenant_id,
@@ -256,7 +320,95 @@ def client_facing_auto_reply_text(text: str) -> str:
                 cleaned = stripped.strip()
                 changed = True
                 break
-    return telegram_plain_text(cleaned)
+    cleaned = telegram_plain_text(cleaned)
+    cleaned = _strip_staff_facing_sentences(cleaned)
+    return _concise_telegram_reply(cleaned)
+
+
+def _strip_staff_facing_sentences(text: str) -> str:
+    """Remove any sentence carrying internal staff/draft/approval framing.
+
+    Operates line by line so multi-line content (e.g. package lists) keeps its
+    structure. Blank lines are preserved as paragraph breaks; a line that becomes
+    empty only because it was pure staff-facing meta is dropped entirely.
+    """
+    out_lines: list[str] = []
+    for line in text.split("\n"):
+        if not line.strip():
+            out_lines.append("")
+            continue
+        kept = [
+            sentence
+            for sentence in re.split(r"(?<=[.!?])\s+", line)
+            if not _is_staff_facing_sentence(sentence)
+        ]
+        joined = " ".join(part.strip() for part in kept if part.strip()).strip()
+        if joined:
+            out_lines.append(joined)
+    cleaned = "\n".join(out_lines)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned.strip()
+
+
+def _is_staff_facing_sentence(sentence: str) -> bool:
+    lowered = sentence.lower()
+    return any(marker in lowered for marker in STAFF_FACING_SENTENCE_MARKERS)
+
+
+def _concise_telegram_reply(text: str) -> str:
+    """Shape the cleaned reply into a short, mobile-friendly Telegram message.
+
+    Drops long add-on/overtime/fee detail lines, caps the overall length, and
+    appends a single warm closing line. Returns ``""`` for empty input so the
+    caller still skips sending (never sends a closing-only message).
+    """
+    if not text.strip():
+        return ""
+
+    kept_lines = [
+        line
+        for line in text.split("\n")
+        if not (line.strip() and _is_addon_detail_line(line))
+    ]
+    trimmed = re.sub(r"\n{3,}", "\n\n", "\n".join(kept_lines)).strip()
+    trimmed = _truncate_to_budget(trimmed, TELEGRAM_MAX_REPLY_CHARS)
+    if not trimmed:
+        return ""
+
+    if "member of our team can help you choose" not in trimmed.lower():
+        trimmed = f"{trimmed}\n\n{TEAM_HELP_CLOSING}"
+    return trimmed
+
+
+def _is_addon_detail_line(line: str) -> bool:
+    lowered = line.lower()
+    return any(marker in lowered for marker in ADDON_DETAIL_MARKERS)
+
+
+def _truncate_to_budget(text: str, budget: int) -> str:
+    """Keep whole lines up to ``budget`` characters; fall back to sentences."""
+    if len(text) <= budget:
+        return text
+    kept: list[str] = []
+    total = 0
+    for line in text.split("\n"):
+        addition = len(line) + (1 if kept else 0)
+        if kept and total + addition > budget:
+            break
+        kept.append(line)
+        total += addition
+    result = "\n".join(kept).strip()
+    if result:
+        return result
+    # A single opening line already exceeds the budget: trim by sentences.
+    first_line = text.split("\n", 1)[0]
+    accumulated = ""
+    for sentence in re.split(r"(?<=[.!?])\s+", first_line):
+        candidate = f"{accumulated} {sentence}".strip()
+        if accumulated and len(candidate) > budget:
+            break
+        accumulated = candidate
+    return (accumulated or first_line[:budget]).strip()
 
 
 def telegram_plain_text(text: str) -> str:

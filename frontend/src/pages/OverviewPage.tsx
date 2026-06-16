@@ -6,7 +6,7 @@ import { useTasks } from '../hooks/useTasks'
 import { useEscalations } from '../hooks/useEscalations'
 import { useConversations } from '../hooks/useConversations'
 import { useAuthStore } from '../store/authStore'
-import { RiskBadge, TaskStatusBadge, EscalationStatusBadge } from '../components/ui/Badge'
+import { TaskStatusBadge, EscalationStatusBadge } from '../components/ui/Badge'
 import { PageLoader } from '../components/ui/LoadingSpinner'
 import { formatRelative } from '../utils/date'
 
@@ -125,8 +125,8 @@ export function OverviewPage() {
                     <p className="text-[10px] text-text-muted">{conv.source || 'Unknown source'}</p>
                   </div>
                   <div className="flex flex-col items-end gap-1">
-                    <RiskBadge level={conv.risk_level} />
-                    <span className="text-[10px] text-text-muted">{formatRelative(conv.last_message_at)}</span>
+                    <span className="text-[10px] text-text-muted capitalize">{conv.status}</span>
+                    <span className="text-[10px] text-text-muted">{formatRelative(conv.updated_at)}</span>
                   </div>
                 </Link>
               )
@@ -153,8 +153,8 @@ export function OverviewPage() {
                   <TaskStatusBadge status={task.status} />
                   <div className="flex-1 min-w-0">
                     <p className="text-xs font-medium text-text-primary truncate">{task.title}</p>
-                    {task.due_date && (
-                      <p className="text-[10px] text-text-muted">Due {formatRelative(task.due_date)}</p>
+                    {task.due_at && (
+                      <p className="text-[10px] text-text-muted">Due {formatRelative(task.due_at)}</p>
                     )}
                   </div>
                 </div>
@@ -178,8 +178,10 @@ export function OverviewPage() {
                 <div key={esc.id} className="px-5 py-3 flex items-start gap-3">
                   <EscalationStatusBadge status={esc.status} />
                   <div className="flex-1 min-w-0">
-                    <p className="text-xs font-medium text-text-primary truncate">{esc.title}</p>
-                    <p className="text-[10px] text-text-muted capitalize">{esc.severity} severity</p>
+                    <p className="text-xs font-medium text-text-primary truncate">{esc.ai_summary || 'Escalation'}</p>
+                    {esc.risk_level && (
+                      <p className="text-[10px] text-text-muted capitalize">{esc.risk_level} risk</p>
+                    )}
                   </div>
                 </div>
               ))}

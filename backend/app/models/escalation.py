@@ -44,8 +44,10 @@ class Escalation(TimestampMixin, Base):
     message_id: Mapped[UUID | None] = mapped_column(
         Uuid(as_uuid=True), ForeignKey("messages.id", ondelete="SET NULL"), nullable=True
     )
-    created_by_user_id: Mapped[UUID] = mapped_column(
-        Uuid(as_uuid=True), ForeignKey("users.id"), nullable=False
+    # Nullable so automated inbound processing (e.g. the Telegram pipeline) can
+    # create a system-owned escalation with no authenticated user.
+    created_by_user_id: Mapped[UUID | None] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("users.id"), nullable=True
     )
     assigned_manager_user_id: Mapped[UUID | None] = mapped_column(
         Uuid(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True

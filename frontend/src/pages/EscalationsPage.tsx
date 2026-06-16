@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom'
 import { m } from 'framer-motion'
 import { AlertTriangle, ArrowRight } from 'lucide-react'
 import { useEscalations, useUpdateEscalation } from '../hooks/useEscalations'
-import { EscalationStatusBadge, SeverityBadge } from '../components/ui/Badge'
+import { EscalationStatusBadge, RiskBadge } from '../components/ui/Badge'
 import { PageLoader } from '../components/ui/LoadingSpinner'
 import { EmptyState } from '../components/ui/EmptyState'
 import { ErrorState } from '../components/ui/ErrorState'
@@ -78,12 +78,12 @@ export function EscalationsPage() {
               <div className="flex items-start justify-between gap-4">
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 mb-1.5">
-                    <p className="text-sm font-semibold text-text-primary">{esc.title}</p>
-                    <SeverityBadge severity={esc.severity} />
+                    <p className="text-sm font-semibold text-text-primary">{esc.ai_summary || 'Escalation'}</p>
+                    {esc.risk_level && <RiskBadge level={esc.risk_level} />}
                     <EscalationStatusBadge status={esc.status} />
                   </div>
-                  {esc.description && (
-                    <p className="text-sm text-text-muted mb-2">{esc.description}</p>
+                  {esc.suggested_next_step && (
+                    <p className="text-sm text-text-muted mb-2">{esc.suggested_next_step}</p>
                   )}
                   <div className="flex items-center gap-4 text-xs text-text-muted">
                     <span>{formatRelative(esc.created_at)}</span>
@@ -102,7 +102,7 @@ export function EscalationsPage() {
                   <select
                     value={esc.status}
                     onChange={(e) => handleStatusChange(esc.id, e.target.value as EscalationStatus)}
-                    aria-label={`Change status for escalation: ${esc.title}`}
+                    aria-label={`Change status for escalation: ${esc.ai_summary || esc.id}`}
                     className="text-xs border border-border rounded-md px-2 py-1.5 text-text-muted bg-surface hover:bg-surface-warm transition-colors focus:outline-none flex-shrink-0"
                   >
                     <option value="open">Open</option>

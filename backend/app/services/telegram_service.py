@@ -13,10 +13,13 @@ from app.core.config import settings
 from app.core.tenant_context import TenantContext
 from app.models.conversation import Conversation, ConversationStatus
 from app.models.message import Message, MessageDirection
+from app.models.suggested_reply import SuggestedReply, SuggestedReplyStatus
 from app.repositories.conversation_repository import ConversationRepository
 from app.repositories.message_repository import MessageRepository
+from app.repositories.suggested_reply_repository import SuggestedReplyRepository
 from app.repositories.tenant_repository import TenantRepository
 from app.services.audit_log_service import (
+    AUDIT_EVENT_SUGGESTED_REPLY_APPROVED,
     AUDIT_EVENT_TELEGRAM_MESSAGE_RECEIVED,
     AUDIT_EVENT_TELEGRAM_REPLY_SENT,
     AUDIT_EVENT_TENANT_CROSS_TENANT_ACCESS_BLOCKED,
@@ -118,6 +121,17 @@ class TelegramService:
             external_conversation_id=parsed.chat_id,
         )
         is_new_conversation = conversation is None
+        if conversation is not None:
+            # Idempotency: Telegram retries deliver the same update. If we already
+            # stored this inbound message, return it without re-processing so we do
+            # not duplicate the message, suggested reply, escalation, or auto-send.
+            existing = await MessageRepository(session).find_inbound_by_external_id(
+                tenant.id,
+                source=TELEGRAM_SOURCE,
+                external_message_id=parsed.message_id,
+            )
+            if existing is not None:
+                return conversation, existing, False
         if conversation is None:
             conversation = Conversation(
                 tenant_id=tenant.id,
@@ -164,12 +178,16 @@ class TelegramService:
             tenant_id=tenant.id,
             message=message,
         )
-        from app.services.telegram_auto_reply_service import TelegramAutoReplyService
+        from app.services.inbound_message_processing_service import (
+            InboundMessageProcessingService,
+        )
 
-        await TelegramAutoReplyService().maybe_auto_reply(
-            session,
-            conversation=conversation,
-            message=message,
+        await InboundMessageProcessingService(session).process_inbound_message(
+            tenant_id=tenant.id,
+            conversation_id=conversation.id,
+            message_id=message.id,
+            source=TELEGRAM_SOURCE,
+            auto_reply_channel=TELEGRAM_SOURCE,
         )
         return conversation, message, is_new_conversation
 
@@ -180,6 +198,7 @@ class TelegramService:
         conversation_id: UUID,
         text: str,
         ctx: TenantContext,
+        suggested_reply_id: UUID | None = None,
     ) -> Message:
         conversation = await ConversationRepository(session).get(conversation_id)
         if conversation is None:
@@ -202,6 +221,20 @@ class TelegramService:
                 detail="conversation is not a Telegram conversation",
             )
 
+        messages = MessageRepository(session)
+        suggested_reply = await self._resolve_reply_to_send(
+            session, suggested_reply_id, conversation, ctx
+        )
+        # Idempotency: if this suggested reply was already sent (staff approved or
+        # auto-sent), do not call Telegram again or persist a duplicate message —
+        # return the existing outbound message so a double click is a no-op.
+        if suggested_reply is not None and _reply_already_sent(suggested_reply):
+            existing = await messages.latest_outbound_for_conversation(
+                ctx.tenant_id, conversation.id, source=TELEGRAM_SOURCE
+            )
+            if existing is not None:
+                return existing
+
         telegram_response = await self.send_message(conversation.external_conversation_id, text)
         telegram_message_id = _sent_message_id(telegram_response)
         now = datetime.now(timezone.utc)
@@ -216,7 +249,29 @@ class TelegramService:
             sender_user_id=ctx.user_id,
             sent_at=now,
         )
-        await MessageRepository(session).add(message)
+        await messages.add(message)
+        if suggested_reply is not None:
+            # Mark the AI suggestion as used so the dashboard stops showing it as a
+            # pending action. Reuses the existing "approved" status + audit event.
+            suggested_reply.status = SuggestedReplyStatus.approved
+            suggested_reply.approved_by_user_id = ctx.user_id
+            suggested_reply.sent_channel = TELEGRAM_SOURCE
+            session.add(suggested_reply)
+            AuditLogService.record(
+                session,
+                tenant_id=ctx.tenant_id,
+                actor_user_id=ctx.user_id,
+                event_type=AUDIT_EVENT_SUGGESTED_REPLY_APPROVED,
+                resource_type="suggested_reply",
+                resource_id=suggested_reply.id,
+                details={
+                    "suggested_reply_id": suggested_reply.id,
+                    "conversation_id": conversation.id,
+                    "message_id": message.id,
+                    "sent_channel": TELEGRAM_SOURCE,
+                    "user_id": ctx.user_id,
+                },
+            )
         AuditLogService.record(
             session,
             tenant_id=ctx.tenant_id,
@@ -228,11 +283,45 @@ class TelegramService:
                 "conversation_id": conversation.id,
                 "chat_id": conversation.external_conversation_id,
                 "telegram_message_id": telegram_message_id,
+                "suggested_reply_id": suggested_reply.id if suggested_reply is not None else None,
             },
         )
         await session.commit()
         await session.refresh(message)
         return message
+
+    @staticmethod
+    async def _resolve_reply_to_send(
+        session: AsyncSession,
+        suggested_reply_id: UUID | None,
+        conversation: Conversation,
+        ctx: TenantContext,
+    ) -> SuggestedReply | None:
+        if suggested_reply_id is None:
+            return None
+        reply = await SuggestedReplyRepository(session).get(suggested_reply_id)
+        if reply is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="suggested reply not found"
+            )
+        if reply.tenant_id != ctx.tenant_id:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="forbidden")
+        if reply.conversation_id != conversation.id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="suggested reply does not belong to conversation",
+            )
+        return reply
+
+
+def _reply_already_sent(reply: SuggestedReply) -> bool:
+    """A suggested reply counts as already delivered once it was auto-sent or a
+    staff member approved/sent it through a channel."""
+    return (
+        reply.auto_sent_at is not None
+        or reply.status == SuggestedReplyStatus.approved
+        or reply.sent_channel is not None
+    )
 
 
 def _sent_message_id(response: dict[str, Any]) -> str | None:

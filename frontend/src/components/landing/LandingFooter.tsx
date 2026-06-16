@@ -1,4 +1,5 @@
 import { Link } from 'react-router-dom'
+import { Logo } from '../Logo'
 
 // Computed once at module load (not during render) so the value is stable
 // for the session and never produces a server/client hydration mismatch.
@@ -12,14 +13,7 @@ export function LandingFooter() {
           {/* Brand */}
           <div>
             <div className="flex items-center gap-2.5 mb-2">
-              <div className="w-7 h-7 rounded-md bg-primary flex items-center justify-center">
-                <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
-                  <rect x="2" y="1" width="12" height="14" rx="2" stroke="#C8A96A" strokeWidth="1.2"/>
-                  <line x1="4.5" y1="5" x2="11.5" y2="5" stroke="#C8A96A" strokeWidth="1.2" strokeLinecap="round"/>
-                  <line x1="4.5" y1="8" x2="9.5" y2="8" stroke="#C8A96A" strokeWidth="1.2" strokeLinecap="round"/>
-                  <line x1="4.5" y1="11" x2="8" y2="11" stroke="#C8A96A" strokeWidth="1.2" strokeLinecap="round"/>
-                </svg>
-              </div>
+              <Logo variant="light" className="w-11 h-11" />
               <span className="text-sm font-semibold text-text-primary">EventSense</span>
             </div>
             <p className="text-xs text-text-muted max-w-xs">

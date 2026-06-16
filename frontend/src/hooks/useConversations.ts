@@ -2,6 +2,8 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { conversationsService } from '../services/conversations'
 import { messagesService } from '../services/messages'
 import { suggestedRepliesService } from '../services/suggestedReplies'
+import { telegramService } from '../services/telegram'
+import type { SendTelegramReplyRequest } from '../services/telegram'
 import type { CreateMessageRequest } from '../types'
 
 export function useConversations() {
@@ -23,6 +25,30 @@ export function useSendMessage(conversationId: string) {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: (data: CreateMessageRequest) => messagesService.create(conversationId, data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['conversations', conversationId] })
+    },
+  })
+}
+
+export function useSendTelegramReply(conversationId: string) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (data: SendTelegramReplyRequest) =>
+      telegramService.sendReply(conversationId, data),
+    onSuccess: () => {
+      // Refresh detail so the now-sent reply shows as an outbound bubble and the
+      // pending suggested-reply card disappears.
+      qc.invalidateQueries({ queryKey: ['conversations', conversationId] })
+    },
+  })
+}
+
+export function useDismissSuggestedReply(conversationId: string) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (replyId: string) =>
+      suggestedRepliesService.update(replyId, { status: 'rejected' }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['conversations', conversationId] })
     },

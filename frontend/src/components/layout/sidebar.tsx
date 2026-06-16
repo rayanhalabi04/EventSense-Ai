@@ -12,6 +12,7 @@ import {
 } from 'lucide-react'
 import { useAuthStore } from '../../store/authStore'
 import { useLogout } from '../../hooks/useAuth'
+import { Logo } from '../Logo'
 
 const navItems = [
   { to: '/overview', icon: LayoutDashboard, label: 'Overview', exact: true },
@@ -44,14 +45,7 @@ export function Sidebar() {
       {/* Logo */}
       <div className="px-5 pt-6 pb-5 border-b border-white/10">
         <div className="flex items-center gap-2.5">
-          <div className="w-8 h-8 rounded-lg bg-accent flex items-center justify-center flex-shrink-0">
-            <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-              <rect x="2" y="1" width="12" height="14" rx="2" stroke="#172033" strokeWidth="1.2"/>
-              <line x1="4.5" y1="5" x2="11.5" y2="5" stroke="#172033" strokeWidth="1.2" strokeLinecap="round"/>
-              <line x1="4.5" y1="8" x2="9.5" y2="8" stroke="#172033" strokeWidth="1.2" strokeLinecap="round"/>
-              <line x1="4.5" y1="11" x2="8" y2="11" stroke="#172033" strokeWidth="1.2" strokeLinecap="round"/>
-            </svg>
-          </div>
+          <Logo variant="dark" className="w-11 h-11 flex-shrink-0" />
           <div>
             <p className="text-sm font-semibold text-white leading-none">EventSense</p>
             <p className="text-[10px] text-white/40 mt-0.5 font-medium tracking-wider uppercase">Operations</p>

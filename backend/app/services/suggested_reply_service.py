@@ -246,8 +246,8 @@ def build_supported_reply(
             parts.append(f"Based on our {primary_title}: {sentence}")
         else:
             parts.append(
-                f"I can share details from our {primary_title}; a staff member "
-                "will confirm the exact pricing and inclusions for your date."
+                f"I can share details from our {primary_title}; a member of our "
+                "team will confirm the exact pricing and inclusions for your date."
             )
     else:
         sentence = _first_sentence_containing(

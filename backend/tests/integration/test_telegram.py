@@ -7,14 +7,27 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.audit_log import AuditLog
 from app.models.conversation import Conversation
+from app.models.escalation import Escalation
 from app.models.message import Message, MessageDirection
 from app.models.suggested_reply import SuggestedReply
+from app.models.tenant import Tenant
 from app.services.audit_log_service import (
+    AUDIT_EVENT_ESCALATION_CREATED,
+    AUDIT_EVENT_SUGGESTED_REPLY_APPROVED,
     AUDIT_EVENT_TELEGRAM_AUTO_REPLY_SENT,
     AUDIT_EVENT_TELEGRAM_AUTO_REPLY_SKIPPED,
     AUDIT_EVENT_TELEGRAM_REPLY_SENT,
 )
+from app.services.inbound_message_processing_service import (
+    InboundMessageProcessingService,
+)
 from app.services.intent_classifier_service import IntentClassification
+from app.models.suggested_reply import SuggestedReplyStatus
+from app.services.telegram_auto_reply_service import (
+    TELEGRAM_MAX_REPLY_CHARS,
+    TEAM_HELP_CLOSING,
+)
+from app.services.telegram_service import TelegramApiError
 
 
 pytestmark = pytest.mark.asyncio
@@ -349,7 +362,10 @@ async def test_low_risk_pricing_request_with_source_auto_sends_when_enabled(
     assert sent == [
         {
             "chat_id": "1701",
-            "text": "Hi, our wedding package starts at the published package rate.",
+            "text": (
+                "Hi, our wedding package starts at the published package rate.\n\n"
+                + TEAM_HELP_CLOSING
+            ),
         }
     ]
     outbound = (
@@ -365,6 +381,48 @@ async def test_low_risk_pricing_request_with_source_auto_sends_when_enabled(
     sent_audits = await latest_auto_reply_audits(db_session, AUDIT_EVENT_TELEGRAM_AUTO_REPLY_SENT)
     assert len(sent_audits) == 1
     assert sent_audits[0].resource_id == str(outbound.id)
+    reply = (
+        await db_session.execute(
+            select(SuggestedReply).where(
+                SuggestedReply.conversation_id == UUID(response.json()["conversation_id"])
+            )
+        )
+    ).scalar_one()
+    assert reply.auto_sent_at is not None
+    assert reply.sent_channel == "telegram"
+
+
+async def test_skipped_auto_reply_leaves_suggested_reply_pending(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    # A blocked intent (payment_issue) is never auto-sent — the suggested reply
+    # stays a pending draft awaiting human approval (auto_sent_at unset).
+    enable_auto_reply(monkeypatch)
+    force_intent(monkeypatch, "payment_issue", 0.95)
+    monkeypatch.setattr(
+        "app.services.telegram_auto_reply_service.generate_suggested_reply",
+        fake_supported_suggested_reply,
+    )
+    fail_on_telegram_send(monkeypatch)
+
+    response = await post_telegram_update(
+        client,
+        telegram_update(chat_id=1707, message_id=107, text="My payment failed and I need help."),
+    )
+
+    assert response.status_code == 200
+    reply = (
+        await db_session.execute(
+            select(SuggestedReply).where(
+                SuggestedReply.conversation_id == UUID(response.json()["conversation_id"])
+            )
+        )
+    ).scalar_one()
+    assert reply.auto_sent_at is None
+    assert reply.sent_channel is None
+    assert reply.status.value == "draft"
 
 
 @pytest.mark.parametrize(
@@ -401,7 +459,10 @@ async def test_auto_reply_strips_staff_facing_prefixes_before_sending(
     )
 
     assert response.status_code == 200
-    assert sent == ["Hi, our wedding package starts at the published package rate."]
+    assert sent == [
+        "Hi, our wedding package starts at the published package rate.\n\n"
+        + TEAM_HELP_CLOSING
+    ]
     assert sent[0].startswith("Hi,")
     forbidden = [
         "Here's a draft for staff review:",
@@ -419,6 +480,98 @@ async def test_auto_reply_strips_staff_facing_prefixes_before_sending(
         )
     ).scalar_one()
     assert outbound.body == sent[0]
+
+
+@pytest.mark.parametrize(
+    "staff_framed_text",
+    [
+        (
+            "Hi there! We offer three wedding packages: Classic, Premium, and "
+            "Luxury. **Staff review required before sending.**"
+        ),
+        (
+            "Here's a draft reply for staff review: Hi there! We offer three "
+            "wedding packages. This reply was sent to the client automatically. "
+            "No approval needed."
+        ),
+        (
+            "Hi there! We offer three wedding packages.\n\n"
+            "Internal note: staff must review before sending. Approval needed."
+        ),
+    ],
+)
+async def test_auto_reply_message_is_clean_client_facing_text(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+    staff_framed_text: str,
+):
+    """The Telegram client must never receive internal draft/staff/approval framing."""
+    enable_auto_reply(monkeypatch)
+    force_intent(monkeypatch, "pricing_request", 0.94)
+    monkeypatch.setattr(
+        "app.services.telegram_auto_reply_service.generate_suggested_reply",
+        prefixed_supported_suggested_reply_factory(staff_framed_text),
+    )
+    sent = []
+
+    async def fake_send_message(self, chat_id: str, text: str):
+        sent.append(text)
+        return {"ok": True, "result": {"message_id": 7301}}
+
+    monkeypatch.setattr("app.services.telegram_service.TelegramService.send_message", fake_send_message)
+
+    response = await post_telegram_update(
+        client,
+        telegram_update(chat_id=1731, message_id=131, text="Can you send me your wedding package prices?"),
+    )
+
+    # Auto-reply still sends successfully.
+    assert response.status_code == 200
+    assert len(sent) == 1
+    delivered = sent[0]
+    assert delivered  # non-empty client message
+    assert "Hi there! We offer three wedding packages" in delivered
+
+    # None of the banned internal phrases reach the client.
+    lowered = delivered.lower()
+    for banned in (
+        "draft",
+        "staff review",
+        "staff must review",
+        "approval",
+        "sent automatically",
+        "internal note",
+        "before sending",
+    ):
+        assert banned not in lowered, f"forbidden phrase leaked to client: {banned!r}"
+
+    # The outbound Telegram message is persisted with the cleaned text.
+    outbound = (
+        await db_session.execute(
+            select(Message).where(
+                Message.conversation_id == UUID(response.json()["conversation_id"]),
+                Message.direction == MessageDirection.outbound,
+            )
+        )
+    ).scalar_one()
+    assert outbound.body == delivered
+    assert outbound.source == "telegram"
+
+    # Inbound message still appears in the inbox with source=telegram.
+    inbound = (
+        await db_session.execute(
+            select(Message).where(
+                Message.conversation_id == UUID(response.json()["conversation_id"]),
+                Message.direction == MessageDirection.inbound,
+            )
+        )
+    ).scalar_one()
+    assert inbound.source == "telegram"
+
+    # Audit log for the auto-send still recorded.
+    sent_audits = await latest_auto_reply_audits(db_session, AUDIT_EVENT_TELEGRAM_AUTO_REPLY_SENT)
+    assert len(sent_audits) == 1
 
 
 async def test_auto_reply_formats_markdown_like_package_text_for_plain_telegram(
@@ -471,6 +624,84 @@ async def test_auto_reply_formats_markdown_like_package_text_for_plain_telegram(
     ).scalar_one()
     assert outbound.body == sent[0]
     assert "**" not in outbound.body
+
+
+async def test_auto_reply_is_concise_and_drops_addon_detail_for_telegram(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A long, detail-heavy pricing draft is trimmed to a short, mobile-friendly reply."""
+    enable_auto_reply(monkeypatch)
+    force_intent(monkeypatch, "pricing_request", 0.94)
+    long_pricing_text = (
+        "Hi there! Here are our wedding packages:\n\n"
+        "Classic Package: $5,000, up to 80 guests.\n"
+        "Add-on: extra floral arch available for $400.\n"
+        "Overtime is charged at $250 per hour after midnight.\n\n"
+        "Premium Package: $9,000, up to 150 guests.\n"
+        "Service charge of 18% applies to all food and beverage.\n"
+        "Corkage fee is $25 per bottle for outside wine.\n\n"
+        "Luxury Package: $15,000, up to 250 guests.\n"
+        "Gratuity of 20% is added for staffing.\n"
+        "Per extra guest beyond the limit is billed at $90.\n"
+    )
+    monkeypatch.setattr(
+        "app.services.telegram_auto_reply_service.generate_suggested_reply",
+        prefixed_supported_suggested_reply_factory(long_pricing_text),
+    )
+    sent = []
+
+    async def fake_send_message(self, chat_id: str, text: str):
+        sent.append(text)
+        return {"ok": True, "result": {"message_id": 7401}}
+
+    monkeypatch.setattr("app.services.telegram_service.TelegramService.send_message", fake_send_message)
+
+    response = await post_telegram_update(
+        client,
+        telegram_update(chat_id=1741, message_id=141, text="Can you send me your wedding package prices?"),
+    )
+
+    assert response.status_code == 200
+    assert len(sent) == 1
+    delivered = sent[0]
+
+    # Concise: the message stays within the mobile-friendly budget.
+    assert len(delivered) <= TELEGRAM_MAX_REPLY_CHARS
+
+    # The main packages (name + price + guest limit) survive.
+    assert "Classic Package: $5,000, up to 80 guests." in delivered
+    assert "Premium Package: $9,000, up to 150 guests." in delivered
+
+    # Add-on / overtime / fee detail lines are dropped.
+    lowered = delivered.lower()
+    for noise in (
+        "add-on",
+        "overtime",
+        "service charge",
+        "corkage",
+        "gratuity",
+        "per extra guest",
+        "per hour",
+    ):
+        assert noise not in lowered, f"detail line leaked into Telegram reply: {noise!r}"
+
+    # Warm helper closing is present, and no internal wording leaked.
+    assert TEAM_HELP_CLOSING in delivered
+    for banned in ("draft", "staff review", "approval", "sent automatically"):
+        assert banned not in lowered
+
+    outbound = (
+        await db_session.execute(
+            select(Message).where(
+                Message.conversation_id == UUID(response.json()["conversation_id"]),
+                Message.direction == MessageDirection.outbound,
+            )
+        )
+    ).scalar_one()
+    assert outbound.body == delivered
+    assert outbound.source == "telegram"
 
 
 async def test_low_risk_pricing_request_does_not_auto_send_when_disabled(
@@ -688,3 +919,567 @@ async def test_outbound_reply_blocks_cross_tenant_user(
     )
 
     assert response.status_code == 403
+
+
+async def escalations_for_conversation(
+    db_session: AsyncSession, conversation_id: UUID
+) -> list[Escalation]:
+    return list(
+        (
+            await db_session.execute(
+                select(Escalation).where(Escalation.conversation_id == conversation_id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+
+# --- shared inbound pipeline: escalation + human-review routing ---------------
+
+
+async def test_low_risk_supported_auto_sends_and_creates_no_escalation(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    enable_auto_reply(monkeypatch)
+    force_intent(monkeypatch, "pricing_request", 0.94)
+    monkeypatch.setattr(
+        "app.services.telegram_auto_reply_service.generate_suggested_reply",
+        fake_supported_suggested_reply,
+    )
+
+    async def fake_send_message(self, chat_id: str, text: str):
+        return {"ok": True, "result": {"message_id": 8001}}
+
+    monkeypatch.setattr("app.services.telegram_service.TelegramService.send_message", fake_send_message)
+
+    response = await post_telegram_update(
+        client,
+        telegram_update(chat_id=1901, message_id=201, text="Can you send wedding package pricing?"),
+    )
+
+    assert response.status_code == 200
+    conversation_id = UUID(response.json()["conversation_id"])
+    sent_audits = await latest_auto_reply_audits(db_session, AUDIT_EVENT_TELEGRAM_AUTO_REPLY_SENT)
+    assert len(sent_audits) == 1
+    assert await escalations_for_conversation(db_session, conversation_id) == []
+
+
+async def test_low_risk_unsupported_does_not_auto_send_and_asks_for_human_review(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    enable_auto_reply(monkeypatch)
+    force_intent(monkeypatch, "pricing_request", 0.95)
+    monkeypatch.setattr(
+        "app.services.telegram_auto_reply_service.generate_suggested_reply",
+        fake_unsupported_suggested_reply,
+    )
+    fail_on_telegram_send(monkeypatch)
+
+    response = await post_telegram_update(
+        client,
+        telegram_update(chat_id=1902, message_id=202, text="Do you cover destination weddings?"),
+    )
+
+    assert response.status_code == 200
+    conversation_id = UUID(response.json()["conversation_id"])
+    skipped = await latest_auto_reply_audits(db_session, AUDIT_EVENT_TELEGRAM_AUTO_REPLY_SKIPPED)
+    assert skipped[0].details["reason"] == "no_rag_source"
+    # A low-risk unsupported answer is a human-review recommendation, not an
+    # escalation: the draft stays pending and no escalation row is created.
+    assert await escalations_for_conversation(db_session, conversation_id) == []
+
+
+async def test_high_risk_complaint_does_not_auto_send_and_creates_escalation(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    enable_auto_reply(monkeypatch)
+    force_intent(monkeypatch, "complaint", 0.96)
+    monkeypatch.setattr(
+        "app.services.telegram_auto_reply_service.generate_suggested_reply",
+        fake_supported_suggested_reply,
+    )
+    fail_on_telegram_send(monkeypatch)
+
+    response = await post_telegram_update(
+        client,
+        telegram_update(
+            chat_id=1903,
+            message_id=203,
+            text="This is a complaint, I am very angry about the service.",
+        ),
+    )
+
+    assert response.status_code == 200
+    conversation_id = UUID(response.json()["conversation_id"])
+    escalations = await escalations_for_conversation(db_session, conversation_id)
+    assert len(escalations) == 1
+    escalation = escalations[0]
+    assert escalation.intent_label == "complaint"
+    assert escalation.created_by_user_id is None
+    assert escalation.source_type == "inbound_auto"
+    created_audits = (
+        await db_session.execute(
+            select(AuditLog).where(AuditLog.event_type == AUDIT_EVENT_ESCALATION_CREATED)
+        )
+    ).scalars().all()
+    assert len(created_audits) == 1
+
+
+@pytest.mark.parametrize(
+    ("label", "text"),
+    [
+        ("cancellation_request", "I want to cancel our booking."),
+        ("payment_issue", "My payment failed and I need help."),
+        ("urgent_change", "Urgent: I need to change the date immediately."),
+    ],
+)
+async def test_risky_intents_do_not_auto_send_and_escalate(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+    label: str,
+    text: str,
+):
+    enable_auto_reply(monkeypatch)
+    force_intent(monkeypatch, label, 0.95)
+    monkeypatch.setattr(
+        "app.services.telegram_auto_reply_service.generate_suggested_reply",
+        fake_supported_suggested_reply,
+    )
+    fail_on_telegram_send(monkeypatch)
+
+    response = await post_telegram_update(
+        client,
+        telegram_update(chat_id=1910, message_id=210, text=text),
+    )
+
+    assert response.status_code == 200
+    conversation_id = UUID(response.json()["conversation_id"])
+    escalations = await escalations_for_conversation(db_session, conversation_id)
+    assert len(escalations) == 1
+    assert escalations[0].intent_label == label
+
+
+async def test_cross_tenant_reference_is_refused_and_not_auto_sent(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    fail_on_telegram_send(monkeypatch)
+    inbound = await post_telegram_update(client, telegram_update(chat_id=1920, message_id=220))
+    conversation_id = UUID(inbound.json()["conversation_id"])
+    message_id = UUID(inbound.json()["message_id"])
+
+    royal = (
+        await db_session.execute(select(Tenant).where(Tenant.slug == "royal-events-agency"))
+    ).scalar_one()
+
+    # Resolving the message under the *wrong* tenant must be refused — the tenant
+    # comes from the channel mapping, never from message content.
+    decision = await InboundMessageProcessingService(db_session).process_inbound_message(
+        tenant_id=royal.id,
+        conversation_id=conversation_id,
+        message_id=message_id,
+        source="telegram",
+        auto_reply_channel="telegram",
+    )
+
+    assert decision.action == "refused"
+    assert decision.auto_send_allowed is False
+    assert decision.escalation_id is None
+    assert await escalations_for_conversation(db_session, conversation_id) == []
+
+
+async def test_duplicate_webhook_does_not_duplicate_message_reply_or_escalation(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    enable_auto_reply(monkeypatch)
+    force_intent(monkeypatch, "complaint", 0.96)
+    monkeypatch.setattr(
+        "app.services.telegram_auto_reply_service.generate_suggested_reply",
+        fake_supported_suggested_reply,
+    )
+    fail_on_telegram_send(monkeypatch)
+
+    update = telegram_update(
+        chat_id=1930,
+        message_id=230,
+        text="This is a complaint and I am unhappy.",
+    )
+    first = await post_telegram_update(client, update)
+    # Telegram retries the identical update (same message_id).
+    second = await post_telegram_update(client, update)
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert second.json()["message_id"] == first.json()["message_id"]
+    assert second.json()["is_new_conversation"] is False
+
+    conversation_id = UUID(first.json()["conversation_id"])
+    inbound_messages = (
+        await db_session.execute(
+            select(Message).where(
+                Message.conversation_id == conversation_id,
+                Message.direction == MessageDirection.inbound,
+            )
+        )
+    ).scalars().all()
+    assert len(inbound_messages) == 1
+    assert len(await escalations_for_conversation(db_session, conversation_id)) == 1
+    replies = (
+        await db_session.execute(
+            select(SuggestedReply).where(SuggestedReply.conversation_id == conversation_id)
+        )
+    ).scalars().all()
+    assert len(replies) == 1
+
+
+async def test_telegram_high_risk_conversation_detail_loads_with_system_escalation(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Regression: opening a Telegram conversation that produced a *system*
+    escalation (created_by_user_id is NULL) must return 200, not crash the
+    EscalationRead serializer (which previously required a non-null UUID and made
+    the detail endpoint 500 -> frontend "Could not load conversation.").
+    """
+    force_intent(monkeypatch, "cancellation_request", 0.95)
+
+    webhook = await post_telegram_update(
+        client,
+        telegram_update(
+            chat_id=1801,
+            message_id=181,
+            text="I want to cancel the booking. Is the deposit refundable?",
+        ),
+    )
+    assert webhook.status_code == 200
+    conversation_id = webhook.json()["conversation_id"]
+
+    token = await login(client)
+
+    # 1) The Telegram message appears in the inbox messages feed.
+    inbox = await client.get("/api/v1/inbox/messages", headers=auth_headers(token))
+    assert inbox.status_code == 200
+    row = next(
+        (r for r in inbox.json() if r["conversation_id"] == conversation_id),
+        None,
+    )
+    assert row is not None, "telegram conversation missing from inbox"
+    assert row["source"] == "telegram"
+    assert row["intent_label"] == "cancellation_request"
+
+    # 2) The inbound pipeline created exactly one system-owned escalation.
+    escalations = (
+        await db_session.execute(
+            select(Escalation).where(Escalation.conversation_id == UUID(conversation_id))
+        )
+    ).scalars().all()
+    assert len(escalations) == 1
+    assert escalations[0].created_by_user_id is None
+
+    # 3) The detail endpoint loads (the actual bug being fixed).
+    detail = await client.get(
+        f"/api/v1/conversations/{conversation_id}/detail",
+        headers=auth_headers(token),
+    )
+    assert detail.status_code == 200, detail.text
+    body = detail.json()
+    assert body["conversation_id"] == conversation_id
+
+    # 4) Detail contains the inbound Telegram message.
+    telegram_inbound = [
+        m
+        for m in body["messages"]
+        if m["direction"] == "inbound" and m["source"] == "telegram"
+    ]
+    assert len(telegram_inbound) == 1
+    assert telegram_inbound[0]["body"] == (
+        "I want to cancel the booking. Is the deposit refundable?"
+    )
+
+    # 5) The system escalation is serialized in the detail payload with null user.
+    assert len(body["escalations"]) == 1
+    assert body["escalations"][0]["created_by_user_id"] is None
+
+
+async def test_telegram_auto_reply_conversation_detail_includes_inbound_and_outbound(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """With auto-reply enabled, the conversation detail must load and show both
+    the inbound Telegram message and the outbound auto-reply."""
+    enable_auto_reply(monkeypatch)
+    force_intent(monkeypatch, "pricing_request", 0.95)
+    monkeypatch.setattr(
+        "app.services.telegram_auto_reply_service.generate_suggested_reply",
+        fake_supported_suggested_reply,
+    )
+
+    async def fake_send_message(self, chat_id: str, text: str):
+        return {"ok": True, "result": {"message_id": 8801}}
+
+    monkeypatch.setattr(
+        "app.services.telegram_service.TelegramService.send_message", fake_send_message
+    )
+
+    webhook = await post_telegram_update(
+        client,
+        telegram_update(
+            chat_id=1802,
+            message_id=182,
+            text="Can you send me your wedding package prices?",
+        ),
+    )
+    assert webhook.status_code == 200
+    conversation_id = webhook.json()["conversation_id"]
+
+    token = await login(client)
+    detail = await client.get(
+        f"/api/v1/conversations/{conversation_id}/detail",
+        headers=auth_headers(token),
+    )
+    assert detail.status_code == 200, detail.text
+    body = detail.json()
+
+    directions = {m["direction"] for m in body["messages"]}
+    assert "inbound" in directions
+    assert "outbound" in directions
+    assert all(
+        m["source"] == "telegram"
+        for m in body["messages"]
+        if m["direction"] in {"inbound", "outbound"}
+    )
+
+
+async def test_auto_replied_telegram_message_is_outbound_and_not_pending(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A low-risk auto-replied Telegram message appears as a real outbound
+    message (source=telegram, no sender_user_id) and its suggested reply is
+    marked auto-sent — so the frontend renders a bubble, not a pending card."""
+    enable_auto_reply(monkeypatch)
+    force_intent(monkeypatch, "pricing_request", 0.95)
+    monkeypatch.setattr(
+        "app.services.telegram_auto_reply_service.generate_suggested_reply",
+        fake_supported_suggested_reply,
+    )
+
+    async def fake_send_message(self, chat_id: str, text: str):
+        return {"ok": True, "result": {"message_id": 9001}}
+
+    monkeypatch.setattr(
+        "app.services.telegram_service.TelegramService.send_message", fake_send_message
+    )
+
+    webhook = await post_telegram_update(
+        client,
+        telegram_update(chat_id=1901, message_id=191, text="Can you send wedding package pricing?"),
+    )
+    assert webhook.status_code == 200
+    conversation_id = webhook.json()["conversation_id"]
+
+    token = await login(client)
+    detail = await client.get(
+        f"/api/v1/conversations/{conversation_id}/detail",
+        headers=auth_headers(token),
+    )
+    assert detail.status_code == 200, detail.text
+    body = detail.json()
+
+    outbound = [m for m in body["messages"] if m["direction"] == "outbound"]
+    assert len(outbound) == 1
+    assert outbound[0]["source"] == "telegram"
+    # Auto-replies carry no sender_user_id (distinguishes them from staff sends).
+    assert outbound[0]["sender_user_id"] is None
+
+    # The suggested reply is recorded as auto-sent (not a pending draft action).
+    assert body["suggested_reply"] is not None
+    assert body["suggested_reply"]["auto_sent_at"] is not None
+    assert body["suggested_reply"]["sent_channel"] == "telegram"
+
+
+async def test_high_risk_suggested_reply_is_pending_then_sent_via_send_endpoint(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """High-risk Telegram message keeps a *pending* suggested reply; clicking
+    "Use this reply" -> POST /send-telegram-reply actually sends to Telegram,
+    persists the outbound message, marks the reply approved/sent, and audits it.
+    A second call is idempotent (no resend, no duplicate)."""
+    enable_auto_reply(monkeypatch)
+    force_intent(monkeypatch, "cancellation_request", 0.95)
+    monkeypatch.setattr(
+        "app.services.telegram_auto_reply_service.generate_suggested_reply",
+        fake_supported_suggested_reply,
+    )
+
+    webhook = await post_telegram_update(
+        client,
+        telegram_update(
+            chat_id=1902,
+            message_id=192,
+            text="I want to cancel the booking. Is the deposit refundable?",
+        ),
+    )
+    assert webhook.status_code == 200
+    conversation_id = webhook.json()["conversation_id"]
+
+    token = await login(client)
+
+    # Pending before use: a draft suggested reply that has not been auto-sent.
+    detail = await client.get(
+        f"/api/v1/conversations/{conversation_id}/detail",
+        headers=auth_headers(token),
+    )
+    assert detail.status_code == 200, detail.text
+    reply = detail.json()["suggested_reply"]
+    assert reply is not None
+    assert reply["status"] == "draft"
+    assert reply["auto_sent_at"] is None
+    reply_id = reply["id"]
+    reply_text = reply["suggested_text"]
+
+    # Mock the actual Telegram delivery and count sends.
+    sends: list[str] = []
+
+    async def fake_send_message(self, chat_id: str, text: str):
+        sends.append(text)
+        return {"ok": True, "result": {"message_id": 9101}}
+
+    monkeypatch.setattr(
+        "app.services.telegram_service.TelegramService.send_message", fake_send_message
+    )
+
+    send = await client.post(
+        f"/api/v1/conversations/{conversation_id}/send-telegram-reply",
+        headers=auth_headers(token),
+        json={"text": reply_text, "suggested_reply_id": reply_id},
+    )
+    assert send.status_code == 201, send.text
+    assert len(sends) == 1
+
+    # Outbound message persisted with source=telegram and a staff sender.
+    after = await client.get(
+        f"/api/v1/conversations/{conversation_id}/detail",
+        headers=auth_headers(token),
+    )
+    assert after.status_code == 200
+    after_body = after.json()
+    outbound = [m for m in after_body["messages"] if m["direction"] == "outbound"]
+    assert len(outbound) == 1
+    assert outbound[0]["source"] == "telegram"
+    assert outbound[0]["sender_user_id"] is not None
+    assert outbound[0]["body"] == reply_text
+
+    # Suggested reply marked used (approved + sent_channel), no longer pending.
+    assert after_body["suggested_reply"]["status"] == "approved"
+    assert after_body["suggested_reply"]["sent_channel"] == "telegram"
+
+    # Audit logs for both the telegram send and the suggested-reply approval.
+    reply_sent_audits = await latest_auto_reply_audits(db_session, AUDIT_EVENT_TELEGRAM_REPLY_SENT)
+    assert len(reply_sent_audits) == 1
+    approved_audits = await latest_auto_reply_audits(db_session, AUDIT_EVENT_SUGGESTED_REPLY_APPROVED)
+    assert len(approved_audits) == 1
+
+    # Idempotency: clicking again does not resend or duplicate the message.
+    send_again = await client.post(
+        f"/api/v1/conversations/{conversation_id}/send-telegram-reply",
+        headers=auth_headers(token),
+        json={"text": reply_text, "suggested_reply_id": reply_id},
+    )
+    assert send_again.status_code == 201, send_again.text
+    assert len(sends) == 1  # no second Telegram send
+    outbound_after = (
+        await db_session.execute(
+            select(Message).where(
+                Message.conversation_id == UUID(conversation_id),
+                Message.direction == MessageDirection.outbound,
+            )
+        )
+    ).scalars().all()
+    assert len(outbound_after) == 1
+
+
+async def test_send_telegram_reply_failure_keeps_reply_pending(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """If Telegram delivery fails, the suggested reply stays pending and no fake
+    outbound message is persisted."""
+    enable_auto_reply(monkeypatch)
+    force_intent(monkeypatch, "cancellation_request", 0.95)
+    monkeypatch.setattr(
+        "app.services.telegram_auto_reply_service.generate_suggested_reply",
+        fake_supported_suggested_reply,
+    )
+
+    webhook = await post_telegram_update(
+        client,
+        telegram_update(
+            chat_id=1903,
+            message_id=193,
+            text="I want to cancel the booking. Is the deposit refundable?",
+        ),
+    )
+    assert webhook.status_code == 200
+    conversation_id = webhook.json()["conversation_id"]
+
+    token = await login(client)
+    detail = await client.get(
+        f"/api/v1/conversations/{conversation_id}/detail",
+        headers=auth_headers(token),
+    )
+    reply = detail.json()["suggested_reply"]
+    reply_id = reply["id"]
+
+    async def failing_send_message(self, chat_id: str, text: str):
+        raise TelegramApiError("telegram is down")
+
+    monkeypatch.setattr(
+        "app.services.telegram_service.TelegramService.send_message", failing_send_message
+    )
+
+    send = await client.post(
+        f"/api/v1/conversations/{conversation_id}/send-telegram-reply",
+        headers=auth_headers(token),
+        json={"text": reply["suggested_text"], "suggested_reply_id": reply_id},
+    )
+    assert send.status_code == 502, send.text
+
+    # Reply still pending; no outbound message; no telegram.reply_sent audit.
+    persisted = (
+        await db_session.execute(
+            select(SuggestedReply).where(SuggestedReply.id == UUID(reply_id))
+        )
+    ).scalar_one()
+    assert persisted.status == SuggestedReplyStatus.draft
+    assert persisted.sent_channel is None
+
+    outbound = (
+        await db_session.execute(
+            select(Message).where(
+                Message.conversation_id == UUID(conversation_id),
+                Message.direction == MessageDirection.outbound,
+            )
+        )
+    ).scalars().all()
+    assert len(outbound) == 0
+
+    reply_sent_audits = await latest_auto_reply_audits(db_session, AUDIT_EVENT_TELEGRAM_REPLY_SENT)
+    assert len(reply_sent_audits) == 0

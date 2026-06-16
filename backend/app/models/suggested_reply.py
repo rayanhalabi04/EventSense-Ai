@@ -1,7 +1,8 @@
 import enum
+from datetime import datetime
 from uuid import UUID, uuid4
 
-from sqlalchemy import Boolean, Enum, ForeignKey, Index, JSON, String, Text
+from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Index, JSON, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.types import Uuid
 
@@ -48,6 +49,11 @@ class SuggestedReply(TimestampMixin, Base):
     answer_supported: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     refusal_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     generation_method: Mapped[str] = mapped_column(String(40), nullable=False, default="template_v1")
+    # Set when the reply was delivered to the client automatically (e.g. Telegram
+    # auto-reply) rather than approved by a human. When populated, the dashboard
+    # shows the reply as already sent and hides the approve/dismiss actions.
+    auto_sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    sent_channel: Mapped[str | None] = mapped_column(String(40), nullable=True)
     created_by_user_id: Mapped[UUID | None] = mapped_column(
         Uuid(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
