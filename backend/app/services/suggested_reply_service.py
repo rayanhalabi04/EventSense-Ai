@@ -69,9 +69,39 @@ ESCALATION_SENTENCE = (
     "If you would like us to review a special case, I can escalate this to a "
     "manager for review."
 )
+PRICING_FOLLOWUP_SENTENCE = (
+    "A member of our team can help you choose the best option based on your "
+    "event needs."
+)
+INTENT_FOLLOWUP_SENTENCES = {
+    "pricing_request": PRICING_FOLLOWUP_SENTENCE,
+    "booking_inquiry": (
+        "A member of our team can guide you through the next steps and confirm "
+        "the details needed to start your booking."
+    ),
+    "availability_question": "A member of our team will check availability and follow up with you.",
+    "service_question": (
+        "A member of our team can share more details and help confirm the "
+        "services that fit your event."
+    ),
+    "guest_count_change": (
+        "A member of our team will review your booking details and confirm what "
+        "changes are still possible."
+    ),
+    "urgent_change": "A member of our team will review this urgently and follow up with the next steps.",
+    "cancellation_request": (
+        "A member of our team will review your booking details and follow up "
+        "with the cancellation next steps."
+    ),
+    "complaint": "A manager or team member will review this carefully and follow up with you shortly.",
+    "payment_issue": "A member of our team will verify the payment status and update you as soon as possible.",
+    "human_escalation": "A team member will review your request and follow up with you directly.",
+    "other": "A team member will review your request and follow up with you.",
+}
+DEFAULT_FOLLOWUP_SENTENCE = INTENT_FOLLOWUP_SENTENCES["other"]
 PAYMENT_VERIFICATION_REPLY = (
-    "Hi, thank you for your message. We'll ask our team to verify your "
-    "deposit/payment confirmation and update you shortly."
+    "Hi, thank you for your message. "
+    f"{INTENT_FOLLOWUP_SENTENCES['payment_issue']}"
 )
 PAYMENT_VERIFICATION_REFUSAL_REASON = "Payment confirmation requires staff verification."
 CONTACT_FOLLOWUP_REPLY = (
@@ -159,6 +189,15 @@ _CONTACT_FOLLOWUP_PATTERNS = (
     re.compile(r"\breach\s+(?:out\s+)?to\s+me\b", re.IGNORECASE),
     re.compile(r"\bget\s+in\s+touch\s+with\s+me\b", re.IGNORECASE),
 )
+_OLD_GENERIC_FOLLOWUP_SENTENCES = (
+    PRICING_FOLLOWUP_SENTENCE,
+    "Our team will review your request and follow up with you.",
+    "A member of our team will review your request and follow up with the details.",
+    "A member of our team will review your request and follow up with you shortly.",
+    "A team member will follow up with you shortly.",
+)
+
+
 @dataclass(frozen=True)
 class GeneratedReply:
     suggested_text: str
@@ -306,6 +345,119 @@ def _first_complete_sentence(text: str) -> str | None:
     return None
 
 
+def _pricing_summary_from_sources(content: str) -> str | None:
+    packages = _extract_pricing_packages(content)
+    if not packages:
+        return None
+
+    package_text = "; ".join(_format_pricing_package(package) for package in packages)
+    return f"Our wedding packages are: {package_text}."
+
+
+def _extract_pricing_packages(content: str) -> list[dict[str, str | None]]:
+    normalized = re.sub(r"\s+", " ", content).strip()
+    if not normalized:
+        return []
+
+    package_heading = re.compile(
+        r"(?:^|\s)(?:\d+\.\s*)?([A-Z][A-Z\s&'/]+?PACKAGE)\s*[-:]\s*(\$\d[\d,]*(?:\.\d{2})?)",
+        re.IGNORECASE,
+    )
+    matches = list(package_heading.finditer(normalized))
+    packages: list[dict[str, str | None]] = []
+    seen: set[tuple[str | None, str | None]] = set()
+    for index, match in enumerate(matches):
+        start = match.end()
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(normalized)
+        package_block = normalized[start:end]
+        name = _title_package_name(match.group(1))
+        price = match.group(2)
+        key = (name.lower(), price)
+        if key in seen:
+            continue
+        seen.add(key)
+        packages.append(
+            {
+                "name": name,
+                "price": price,
+                "guest_limit": _extract_guest_limit(package_block),
+            }
+        )
+    return packages
+
+
+def _title_package_name(name: str) -> str:
+    words = re.sub(r"\s+", " ", name.strip()).split(" ")
+    small_words = {"and", "of", "the", "for"}
+    titled = []
+    for index, word in enumerate(words):
+        lowered = word.lower()
+        if index > 0 and lowered in small_words:
+            titled.append(lowered)
+        else:
+            titled.append(lowered.capitalize())
+    return " ".join(titled)
+
+
+def _extract_guest_limit(package_block: str) -> str | None:
+    patterns = (
+        r"Guest count limit:\s*([^.!?;]+)",
+        r"(?:accommodates|accommodate|capacity(?: is)?|up to)\s+([^.!?;]*?\d+\s+guests?)",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, package_block, flags=re.IGNORECASE)
+        if not match:
+            continue
+        guest_limit = re.sub(r"\s+", " ", match.group(1).strip()).rstrip(".")
+        if guest_limit:
+            return guest_limit[0].upper() + guest_limit[1:]
+    return None
+
+
+def _format_pricing_package(package: dict[str, str | None]) -> str:
+    name = package["name"] or "Package"
+    price = package["price"] or "price available on request"
+    guest_limit = package.get("guest_limit")
+    if guest_limit:
+        return f"{name} at {price} ({guest_limit})"
+    return f"{name} at {price}"
+
+
+def followup_sentence_for_intent(intent_label: str | None) -> str:
+    return INTENT_FOLLOWUP_SENTENCES.get(intent_label or "", DEFAULT_FOLLOWUP_SENTENCE)
+
+
+def apply_intent_followup_sentence(text: str, intent_label: str | None) -> str:
+    """Ensure the draft ends with one intent-appropriate follow-up sentence."""
+    desired = followup_sentence_for_intent(intent_label)
+    cleaned = text
+    for sentence in _OLD_GENERIC_FOLLOWUP_SENTENCES:
+        if sentence == PRICING_FOLLOWUP_SENTENCE and intent_label == "pricing_request":
+            continue
+        cleaned = _remove_sentence(cleaned, sentence)
+
+    if _contains_sentence(cleaned, desired):
+        return _normalize_reply_spacing(cleaned)
+    return _normalize_reply_spacing(f"{cleaned.rstrip()} {desired}")
+
+
+def _contains_sentence(text: str, sentence: str) -> bool:
+    return sentence.lower() in re.sub(r"\s+", " ", text).lower()
+
+
+def _remove_sentence(text: str, sentence: str) -> str:
+    pattern = re.compile(r"(?<!\S)" + re.escape(sentence) + r"(?!\S)", re.IGNORECASE)
+    return pattern.sub("", text)
+
+
+def _normalize_reply_spacing(text: str) -> str:
+    cleaned = re.sub(r"[ \t]+", " ", text)
+    cleaned = re.sub(r"\s+([.!?])", r"\1", cleaned)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    cleaned = re.sub(r" {2,}", " ", cleaned)
+    return cleaned.strip()
+
+
 def _needs_escalation(message_body: str, content: str, risk_level: str | None) -> bool:
     if risk_level == "high":
         return True
@@ -318,6 +470,7 @@ def build_supported_reply(
     sources: list[dict[str, object]],
     message_body: str,
     risk_level: str | None,
+    intent_label: str | None = None,
 ) -> str:
     """Build a grounded, WhatsApp-style reply from RAG sources only.
 
@@ -344,6 +497,21 @@ def build_supported_reply(
             "cancellation happens more than 30 days before the event. The final "
             "refund depends on committed costs and manager review."
         )
+    elif primary_type in ("pricing", "package"):
+        sentence = _pricing_summary_from_sources(combined)
+        if sentence is not None:
+            parts.append(sentence)
+        else:
+            sentence = _first_natural_source_sentence(
+                combined, ("package", "price", "pricing", "include", "cost")
+            )
+            if sentence is not None:
+                parts.append(sentence)
+            else:
+                parts.append(
+                    "A member of our team can confirm the exact pricing and inclusions "
+                    "for your date."
+                )
     elif "guest count" in combined_low:
         sentence = _first_natural_source_sentence(
             combined,
@@ -359,17 +527,6 @@ def build_supported_reply(
         parts.append(
             "Our team will review your request and follow up with you."
         )
-    elif primary_type in ("pricing", "package"):
-        sentence = _first_natural_source_sentence(
-            combined, ("package", "price", "pricing", "include", "cost")
-        )
-        if sentence is not None:
-            parts.append(sentence)
-        else:
-            parts.append(
-                "A member of our team can confirm the exact pricing and inclusions "
-                "for your date."
-            )
     else:
         sentence = _first_natural_source_sentence(
             combined, tuple(word for word in message_body.lower().split() if len(word) > 3)
@@ -392,7 +549,8 @@ def build_supported_reply(
     if _needs_escalation(message_body, combined, risk_level):
         parts.append(ESCALATION_SENTENCE)
 
-    return " ".join(part.strip() for part in parts if part.strip())
+    text = " ".join(part.strip() for part in parts if part.strip())
+    return apply_intent_followup_sentence(text, intent_label)
 
 
 def _compact_sources(rag_result: RagResult) -> list[dict[str, object]]:
@@ -437,6 +595,7 @@ def generate_reply_text(
     rag_result: RagResult,
     message_body: str,
     risk_level: str | None,
+    intent_label: str | None = None,
 ) -> GeneratedReply:
     """Pure, deterministic generation step (no DB, no auth) for easy testing."""
     if not rag_result.answer_supported or not rag_result.sources:
@@ -459,6 +618,7 @@ def generate_reply_text(
         sources=compact,
         message_body=message_body,
         risk_level=risk_level,
+        intent_label=intent_label,
     )
     return GeneratedReply(
         suggested_text=text,
@@ -675,6 +835,7 @@ async def generate_reply_text_with_optional_llm(
         rag_result=rag_result,
         message_body=message_body,
         risk_level=risk_level,
+        intent_label=intent_label,
     )
     if not template_reply.answer_supported or not template_reply.rag_sources:
         return template_reply
@@ -709,6 +870,7 @@ async def generate_reply_text_with_optional_llm(
         llm_text = response.text.strip()
         if not llm_text:
             raise ValueError("llm_empty_response")
+        llm_text = apply_intent_followup_sentence(llm_text, intent_label)
         output_result = check_output_guardrails(
             llm_text,
             template_reply.rag_sources,
@@ -839,7 +1001,10 @@ async def generate_suggested_reply(
             and _is_guest_count_operational_request(message_body, message.intent_label)
         ):
             generated = GeneratedReply(
-                suggested_text=_guest_count_review_reply(message_body),
+                suggested_text=apply_intent_followup_sentence(
+                    _guest_count_review_reply(message_body),
+                    message.intent_label,
+                ),
                 answer_supported=False,
                 refusal_reason=GUEST_COUNT_REVIEW_REFUSAL_REASON,
                 source_document_ids=[],
@@ -856,10 +1021,13 @@ async def generate_suggested_reply(
             )
         ):
             generated = GeneratedReply(
-                suggested_text=_high_risk_review_reply(
-                    message_body,
+                suggested_text=apply_intent_followup_sentence(
+                    _high_risk_review_reply(
+                        message_body,
+                        message.intent_label,
+                        message.risk_level,
+                    ),
                     message.intent_label,
-                    message.risk_level,
                 ),
                 answer_supported=False,
                 refusal_reason=HIGH_RISK_REVIEW_REFUSAL_REASON,

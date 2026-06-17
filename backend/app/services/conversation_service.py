@@ -307,6 +307,8 @@ def _latest_auto_reply_skip_reason(
         return None
     for audit_log in reversed(audit_timeline):
         if audit_log.event_type == AUDIT_EVENT_TELEGRAM_AUTO_REPLY_SKIPPED:
+            if audit_log.details.get("suggested_reply_id") != str(latest_reply.id):
+                continue
             reason = audit_log.details.get("reason")
             return str(reason) if reason is not None else None
     return None

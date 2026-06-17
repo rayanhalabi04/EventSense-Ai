@@ -15,6 +15,7 @@ from app.services.simulator_service import (
     SimulatorService,
     emit_simulator_event,
 )
+from app.services.automated_task_service import AutomatedTaskService
 from app.services.conversation_memory_service import ConversationMemoryService
 
 
@@ -61,6 +62,11 @@ async def simulate_whatsapp_message(
     await session.refresh(message)
     await ConversationMemoryService().store_inbound_message(
         tenant_id=ctx.tenant_id,
+        message=message,
+    )
+    await AutomatedTaskService(session).create_for_inbound_message(
+        tenant_id=ctx.tenant_id,
+        conversation_id=conversation.id,
         message=message,
     )
     return SimulatorMessageResponse(
