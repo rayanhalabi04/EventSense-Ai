@@ -254,7 +254,7 @@ export interface UpdateTaskRequest {
 
 // ── Escalations ───────────────────────────────────────────────────────────────
 
-export type EscalationStatus = 'open' | 'acknowledged' | 'resolved' | 'dismissed'
+export type EscalationStatus = 'open' | 'in_review' | 'resolved' | 'cancelled'
 export type EscalationSeverity = 'medium' | 'high' | 'critical'
 
 /**
@@ -286,7 +286,17 @@ export interface UpdateEscalationRequest {
 // ── Documents ─────────────────────────────────────────────────────────────────
 
 export type DocumentStatus = 'active' | 'archived'
-export type DocumentType = 'policy' | 'contract' | 'faq' | 'pricing' | 'template' | 'other'
+export type DocumentType =
+  | 'pricing'
+  | 'package'
+  | 'faq'
+  | 'deposit_policy'
+  | 'cancellation_policy'
+  | 'contract_terms'
+  | 'service_description'
+  | 'decoration_rules'
+  | 'catering_rules'
+  | 'other'
 
 export interface Document {
   id: string
@@ -294,7 +304,8 @@ export interface Document {
   title: string
   document_type: DocumentType
   status: DocumentStatus
-  content?: string
+  original_filename?: string | null
+  content_text?: string
   created_at: string
   updated_at: string
 }
@@ -310,8 +321,9 @@ export interface DocumentFilters {
 export interface AuditLog {
   id: string
   tenant_id: string
-  user_id?: string
-  action: string
+  actor_user_id?: string | null
+  event_type: string
+  action?: string
   resource_type?: string
   resource_id?: string
   details?: Record<string, unknown>

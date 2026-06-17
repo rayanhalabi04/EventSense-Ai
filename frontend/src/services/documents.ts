@@ -17,9 +17,7 @@ export const documentsService = {
     form.append('file', file)
     form.append('document_type', document_type)
     if (title) form.append('title', title)
-    const res = await api.post<Document>('/api/v1/documents/upload', form, {
-      headers: { 'Content-Type': 'multipart/form-data' },
-    })
+    const res = await api.post<Document>('/api/v1/documents/upload', form)
     return res.data
   },
 
