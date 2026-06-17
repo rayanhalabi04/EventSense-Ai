@@ -10,6 +10,7 @@ from app.models.conversation import Conversation
 from app.models.escalation import Escalation
 from app.models.message import Message, MessageDirection
 from app.models.suggested_reply import SuggestedReply
+from app.models.task import Task, TaskStatus
 from app.models.tenant import Tenant
 from app.services.audit_log_service import (
     AUDIT_EVENT_ESCALATION_CREATED,
@@ -27,11 +28,13 @@ from app.services.conversation_memory_service import (
     _redact_sensitive_text,
 )
 from app.services.intent_classifier_service import IntentClassification
+from app.services.rag_service import EMBEDDING_UNAVAILABLE_MESSAGE
 from app.models.suggested_reply import SuggestedReplyStatus
 from app.services.telegram_auto_reply_service import (
     SAFE_CLIENT_FALLBACK,
     TELEGRAM_MAX_REPLY_CHARS,
     TEAM_HELP_CLOSING,
+    REASON_RAG_PROVIDER_UNAVAILABLE,
 )
 from app.services.telegram_service import TelegramApiError
 
@@ -263,6 +266,26 @@ async def fake_unsupported_suggested_reply(session, tenant_id, user_id, conversa
         rag_sources=[],
         answer_supported=False,
         refusal_reason="No supporting information was found.",
+        generation_method="template_v1",
+        created_by_user_id=user_id,
+    )
+    session.add(reply)
+    await session.flush()
+    return reply
+
+
+async def fake_provider_unavailable_suggested_reply(
+    session, tenant_id, user_id, conversation, message, **kwargs
+):
+    reply = SuggestedReply(
+        tenant_id=tenant_id,
+        conversation_id=conversation.id,
+        message_id=message.id,
+        suggested_text="I could not search the tenant documents right now.",
+        source_document_ids=[],
+        rag_sources=[],
+        answer_supported=False,
+        refusal_reason=EMBEDDING_UNAVAILABLE_MESSAGE,
         generation_method="template_v1",
         created_by_user_id=user_id,
     )
@@ -1047,6 +1070,29 @@ async def test_no_rag_source_never_auto_sends(
     assert skipped[0].details["reason"] == "no_rag_source"
 
 
+async def test_rag_provider_unavailable_skip_reason_never_auto_sends(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    enable_auto_reply(monkeypatch)
+    force_intent(monkeypatch, "pricing_request", 0.95)
+    monkeypatch.setattr(
+        "app.services.telegram_auto_reply_service.generate_suggested_reply",
+        fake_provider_unavailable_suggested_reply,
+    )
+    fail_on_telegram_send(monkeypatch)
+
+    response = await post_telegram_update(
+        client,
+        telegram_update(chat_id=1708, message_id=108, text="Can you send wedding package pricing?"),
+    )
+
+    assert response.status_code == 200
+    skipped = await latest_auto_reply_audits(db_session, AUDIT_EVENT_TELEGRAM_AUTO_REPLY_SKIPPED)
+    assert skipped[0].details["reason"] == REASON_RAG_PROVIDER_UNAVAILABLE
+
+
 async def test_guardrail_refusal_never_auto_sends(
     client: AsyncClient,
     db_session: AsyncSession,
@@ -1179,6 +1225,20 @@ async def escalations_for_conversation(
     )
 
 
+async def tasks_for_conversation(
+    db_session: AsyncSession, conversation_id: UUID
+) -> list[Task]:
+    return list(
+        (
+            await db_session.execute(
+                select(Task).where(Task.conversation_id == conversation_id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+
 # --- shared inbound pipeline: escalation + human-review routing ---------------
 
 
@@ -1209,6 +1269,7 @@ async def test_low_risk_supported_auto_sends_and_creates_no_escalation(
     sent_audits = await latest_auto_reply_audits(db_session, AUDIT_EVENT_TELEGRAM_AUTO_REPLY_SENT)
     assert len(sent_audits) == 1
     assert await escalations_for_conversation(db_session, conversation_id) == []
+    assert await tasks_for_conversation(db_session, conversation_id) == []
 
 
 async def test_low_risk_unsupported_does_not_auto_send_and_asks_for_human_review(
@@ -1236,6 +1297,76 @@ async def test_low_risk_unsupported_does_not_auto_send_and_asks_for_human_review
     # A low-risk unsupported answer is a human-review recommendation, not an
     # escalation: the draft stays pending and no escalation row is created.
     assert await escalations_for_conversation(db_session, conversation_id) == []
+    assert await tasks_for_conversation(db_session, conversation_id) == []
+
+
+@pytest.mark.parametrize(
+    ("label", "text", "title"),
+    [
+        (
+            "guest_count_change",
+            "We need to change our guest count from 80 to 150 for next week.",
+            "Review guest count change",
+        ),
+        (
+            "payment_issue",
+            "I paid the deposit yesterday but no one confirmed it.",
+            "Verify payment status",
+        ),
+        (
+            "complaint",
+            "This is a complaint, I am very upset about the service.",
+            "Review client complaint",
+        ),
+        (
+            "urgent_change",
+            "Urgent: we need to change the event timing immediately.",
+            "Review urgent event change",
+        ),
+    ],
+)
+async def test_task_worthy_telegram_intents_create_open_follow_up_task(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+    label: str,
+    text: str,
+    title: str,
+):
+    enable_auto_reply(monkeypatch)
+    force_intent(monkeypatch, label, 0.96)
+    monkeypatch.setattr(
+        "app.services.telegram_auto_reply_service.generate_suggested_reply",
+        fake_supported_suggested_reply,
+    )
+    fail_on_telegram_send(monkeypatch)
+
+    response = await post_telegram_update(
+        client,
+        telegram_update(chat_id=18000 + len(text), message_id=28000 + len(text), text=text),
+    )
+
+    assert response.status_code == 200
+    conversation_id = UUID(response.json()["conversation_id"])
+    message_id = UUID(response.json()["message_id"])
+    message = await db_session.get(Message, message_id)
+    assert message is not None
+
+    tasks = await tasks_for_conversation(db_session, conversation_id)
+    assert len(tasks) == 1
+    task = tasks[0]
+    assert task.status is TaskStatus.open
+    assert task.title == title
+    assert task.tenant_id == message.tenant_id
+    assert task.conversation_id == conversation_id
+    assert task.message_id == message_id
+    assert task.source_type == "inbound_auto"
+    assert task.source_message_id == message_id
+    assert task.created_by_user_id is not None
+    assert task.due_at is not None
+    assert "Created automatically from an inbound message." in (task.description or "")
+    assert f"Detected intent: {label}" in (task.description or "")
+    assert text in (task.description or "")
 
 
 async def test_high_risk_complaint_does_not_auto_send_and_creates_escalation(
@@ -1561,6 +1692,7 @@ async def test_cancellation_deposit_refund_still_uses_cancellation_policy(
     escalations = await escalations_for_conversation(db_session, conversation_id)
     assert len(escalations) == 1
     assert escalations[0].intent_label == "cancellation_request"
+    assert await tasks_for_conversation(db_session, conversation_id) == []
 
 
 async def test_cross_tenant_reference_is_refused_and_not_auto_sent(
@@ -1631,6 +1763,9 @@ async def test_duplicate_webhook_does_not_duplicate_message_reply_or_escalation(
     ).scalars().all()
     assert len(inbound_messages) == 1
     assert len(await escalations_for_conversation(db_session, conversation_id)) == 1
+    tasks = await tasks_for_conversation(db_session, conversation_id)
+    assert len(tasks) == 1
+    assert tasks[0].source_message_id == UUID(first.json()["message_id"])
     replies = (
         await db_session.execute(
             select(SuggestedReply).where(SuggestedReply.conversation_id == conversation_id)

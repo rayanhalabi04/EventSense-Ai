@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  autoReplySkipLabel,
   getSuggestedReplyCardState,
   hasOutboundMessage,
   isAutoReplyMessage,
@@ -130,5 +131,30 @@ describe('hasOutboundMessage', () => {
     expect(
       hasOutboundMessage([makeMessage({ direction: 'inbound' }), makeMessage({ direction: 'outbound' })]),
     ).toBe(true)
+  })
+})
+
+describe('autoReplySkipLabel', () => {
+  it('maps provider failures to a temporary document-search message', () => {
+    expect(autoReplySkipLabel('rag_provider_unavailable')).toBe(
+      'Auto-send skipped: document search was temporarily unavailable',
+    )
+    expect(autoReplySkipLabel('embedding_provider_unavailable')).toBe(
+      'Auto-send skipped: document search was temporarily unavailable',
+    )
+  })
+
+  it('maps genuine no-source skips without exposing raw reason strings', () => {
+    expect(autoReplySkipLabel('no_rag_source')).toBe(
+      'Auto-send skipped: no supporting company document was found',
+    )
+  })
+
+  it('returns null for missing reasons and a generic label for unknown reasons', () => {
+    expect(autoReplySkipLabel(null)).toBeNull()
+    expect(autoReplySkipLabel(undefined)).toBeNull()
+    expect(autoReplySkipLabel('new_internal_reason')).toBe(
+      'Auto-send skipped: staff review is required',
+    )
   })
 })

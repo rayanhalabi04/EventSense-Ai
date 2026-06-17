@@ -8,9 +8,9 @@ import { EmptyState } from '../components/ui/EmptyState'
 import { ErrorState } from '../components/ui/ErrorState'
 import { Badge } from '../components/ui/Badge'
 import { formatDate } from '../utils/date'
+import { apiErrorDetail } from '../utils/apiError'
+import { DOCUMENT_TYPE_OPTIONS, documentTypeLabel } from '../utils/documentTypes'
 import type { DocumentType } from '../types'
-
-const DOC_TYPES: DocumentType[] = ['policy', 'contract', 'faq', 'pricing', 'template', 'other']
 
 type UploadForm = {
   document_type: DocumentType
@@ -35,7 +35,7 @@ type DocumentsAction =
   | { type: 'SET_UPLOAD_TYPE'; payload: DocumentType }
   | { type: 'RESET_AFTER_UPLOAD' }
 
-const INITIAL_UPLOAD_FORM: UploadForm = { document_type: 'policy', title: '' }
+const INITIAL_UPLOAD_FORM: UploadForm = { document_type: 'deposit_policy', title: '' }
 
 const initialDocumentsState: DocumentsState = {
   search: '',
@@ -54,7 +54,7 @@ function documentsReducer(state: DocumentsState, action: DocumentsAction): Docum
     case 'OPEN_UPLOAD':
       return { ...state, showUpload: true }
     case 'CLOSE_UPLOAD':
-      return { ...state, showUpload: false }
+      return { ...state, showUpload: false, uploadForm: INITIAL_UPLOAD_FORM, selectedFile: null }
     case 'SELECT_FILE':
       return {
         ...state,
@@ -82,6 +82,8 @@ export function DocumentsPage() {
   const docs = useDocuments({ search: search || undefined, document_type: typeFilter, status: 'active' })
   const uploadDoc = useUploadDocument()
   const archiveDoc = useArchiveDocument()
+  const uploadError = apiErrorDetail(uploadDoc.error)
+  const canUpload = Boolean(selectedFile && uploadForm.title.trim() && uploadForm.document_type && !uploadDoc.isPending)
 
   const handleFileChange = (e: ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
@@ -92,11 +94,22 @@ export function DocumentsPage() {
 
   const handleUpload = (e: FormEvent) => {
     e.preventDefault()
-    if (!selectedFile) return
+    if (!selectedFile || !uploadForm.title.trim()) return
     uploadDoc.mutate(
-      { file: selectedFile, document_type: uploadForm.document_type, title: uploadForm.title || undefined },
+      { file: selectedFile, document_type: uploadForm.document_type, title: uploadForm.title.trim() },
       { onSuccess: () => dispatch({ type: 'RESET_AFTER_UPLOAD' }) },
     )
+  }
+
+  const openUpload = () => {
+    uploadDoc.reset()
+    dispatch({ type: 'OPEN_UPLOAD' })
+  }
+
+  const closeUpload = () => {
+    uploadDoc.reset()
+    dispatch({ type: 'CLOSE_UPLOAD' })
+    if (fileInputRef.current) fileInputRef.current.value = ''
   }
 
   return (
@@ -106,7 +119,7 @@ export function DocumentsPage() {
           <h1 className="font-display text-3xl font-medium text-text-primary">Documents</h1>
           <p className="text-sm text-text-muted mt-0.5">Policies, contracts, FAQs, and other internal knowledge</p>
         </div>
-        <button type="button" onClick={() => dispatch({ type: 'OPEN_UPLOAD' })} className="btn-primary gap-1.5">
+        <button type="button" onClick={openUpload} className="btn-primary gap-1.5">
           <Upload className="w-4 h-4" />
           Upload document
         </button>
@@ -118,7 +131,7 @@ export function DocumentsPage() {
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           className="fixed inset-0 bg-black/30 z-50 flex items-center justify-center p-4"
-          onClick={(e) => { if (e.target === e.currentTarget) dispatch({ type: 'CLOSE_UPLOAD' }) }}
+          onClick={(e) => { if (e.target === e.currentTarget && !uploadDoc.isPending) closeUpload() }}
         >
           <m.div
             initial={{ scale: 0.96, opacity: 0 }}
@@ -132,6 +145,7 @@ export function DocumentsPage() {
               <button
                 type="button"
                 onClick={() => fileInputRef.current?.click()}
+                disabled={uploadDoc.isPending}
                 className="w-full border-2 border-dashed border-border rounded-lg p-6 text-center cursor-pointer hover:border-accent/50 hover:bg-accent-soft/30 transition-colors"
               >
                 <Upload className="w-8 h-8 text-text-muted mx-auto mb-2" />
@@ -150,7 +164,8 @@ export function DocumentsPage() {
                   type="text"
                   value={uploadForm.title}
                   onChange={(e) => dispatch({ type: 'SET_UPLOAD_TITLE', payload: e.target.value })}
-                  placeholder="Document title (optional)"
+                  disabled={uploadDoc.isPending}
+                  placeholder="Document title"
                   className="input-base"
                 />
               </div>
@@ -160,18 +175,24 @@ export function DocumentsPage() {
                   id="doc-type"
                   value={uploadForm.document_type}
                   onChange={(e) => dispatch({ type: 'SET_UPLOAD_TYPE', payload: e.target.value as DocumentType })}
+                  disabled={uploadDoc.isPending}
                   className="input-base"
                 >
-                  {DOC_TYPES.map((t) => (
-                    <option key={t} value={t}>{t.charAt(0).toUpperCase() + t.slice(1)}</option>
+                  {DOCUMENT_TYPE_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>{option.label}</option>
                   ))}
                 </select>
               </div>
+              {uploadError && (
+                <div className="rounded-md border border-danger/30 bg-danger-soft px-3 py-2 text-xs text-danger" role="alert">
+                  Upload failed: {uploadError}
+                </div>
+              )}
               <div className="flex gap-2 pt-1">
-                <button type="submit" disabled={!selectedFile || uploadDoc.isPending} className="btn-primary flex-1 disabled:opacity-60">
+                <button type="submit" disabled={!canUpload} className="btn-primary flex-1 disabled:opacity-60">
                   {uploadDoc.isPending ? 'Uploading…' : 'Upload'}
                 </button>
-                <button type="button" onClick={() => dispatch({ type: 'CLOSE_UPLOAD' })} className="btn-secondary">Cancel</button>
+                <button type="button" onClick={closeUpload} disabled={uploadDoc.isPending} className="btn-secondary disabled:opacity-60">Cancel</button>
               </div>
             </form>
           </m.div>
@@ -198,7 +219,9 @@ export function DocumentsPage() {
           className="input-base w-auto"
         >
           <option value="">All types</option>
-          {DOC_TYPES.map((t) => <option key={t} value={t}>{t.charAt(0).toUpperCase() + t.slice(1)}</option>)}
+          {DOCUMENT_TYPE_OPTIONS.map((option) => (
+            <option key={option.value} value={option.value}>{option.label}</option>
+          ))}
         </select>
       </div>
 
@@ -211,7 +234,7 @@ export function DocumentsPage() {
           title="No documents"
           description="Upload contracts, FAQs, and pricing sheets to power AI replies."
           icon={<FileText className="w-6 h-6" />}
-          action={<button type="button" onClick={() => dispatch({ type: 'OPEN_UPLOAD' })} className="btn-primary">Upload first document</button>}
+          action={<button type="button" onClick={openUpload} className="btn-primary">Upload first document</button>}
         />
       ) : (
         <div className="grid gap-3">
@@ -229,7 +252,9 @@ export function DocumentsPage() {
               <div className="flex-1 min-w-0">
                 <p className="text-sm font-medium text-text-primary truncate">{doc.title}</p>
                 <div className="flex items-center gap-2 mt-1">
-                  <Badge variant="info">{doc.document_type}</Badge>
+                  <Badge variant="info">{documentTypeLabel(doc.document_type)}</Badge>
+                  <Badge variant="neutral">{doc.status}</Badge>
+                  {doc.original_filename && <span className="text-[11px] text-text-muted truncate">{doc.original_filename}</span>}
                   <span className="text-[11px] text-text-muted">Updated {formatDate(doc.updated_at)}</span>
                 </div>
               </div>

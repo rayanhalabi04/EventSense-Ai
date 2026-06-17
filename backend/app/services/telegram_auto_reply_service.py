@@ -18,7 +18,12 @@ from app.services.audit_log_service import (
     AuditLogService,
 )
 from app.services.guardrail_service import SAFE_REFUSAL, check_input_guardrails, redact_pii
-from app.services.suggested_reply_service import generate_suggested_reply
+from app.services.rag_service import EMBEDDING_UNAVAILABLE_MESSAGE
+from app.services.suggested_reply_service import (
+    apply_intent_followup_sentence,
+    followup_sentence_for_intent,
+    generate_suggested_reply,
+)
 from app.services.telegram_service import TELEGRAM_SOURCE, TelegramApiError, TelegramService
 
 
@@ -60,6 +65,8 @@ AUTO_REPLY_RISKY_KEYWORDS = (
     "lawsuit",
     "attorney",
 )
+REASON_RAG_PROVIDER_UNAVAILABLE = "rag_provider_unavailable"
+REASON_NO_RAG_SOURCE = "no_rag_source"
 STAFF_FACING_PREFIX_PATTERNS = (
     r"^\s*here(?:'|’)?s a draft[^:]*:\s*",
     r"^\s*draft\s*:\s*",
@@ -195,7 +202,10 @@ class TelegramAutoReplyService:
                 reason=generated_skip_reason,
                 suggested_reply=suggested,
             )
-        client_text = client_facing_auto_reply_text(suggested.suggested_text)
+        client_text = client_facing_auto_reply_text(
+            suggested.suggested_text,
+            intent_label=message.intent_label,
+        )
         if not client_text:
             await self._record_skip(session, conversation, message, "client_reply_empty", suggested)
             return AutoReplyDecision(
@@ -289,7 +299,9 @@ class TelegramAutoReplyService:
         if not suggested.answer_supported or not suggested.rag_sources:
             if suggested.refusal_reason == SAFE_REFUSAL:
                 return "guardrail_refusal"
-            return "no_rag_source"
+            if suggested.refusal_reason == EMBEDDING_UNAVAILABLE_MESSAGE:
+                return REASON_RAG_PROVIDER_UNAVAILABLE
+            return REASON_NO_RAG_SOURCE
         if not suggested.suggested_text.strip():
             return "suggested_reply_empty"
         return None
@@ -341,13 +353,13 @@ def _contains_risky_keyword(text: str) -> bool:
     return any(keyword in lowered for keyword in AUTO_REPLY_RISKY_KEYWORDS)
 
 
-def client_facing_auto_reply_text(text: str) -> str:
+def client_facing_auto_reply_text(text: str, intent_label: str | None = None) -> str:
     cleaned = _strip_staff_facing_prefixes(text)
     cleaned = telegram_plain_text(cleaned)
     cleaned = _strip_source_formatting_artifacts(cleaned)
     cleaned = _strip_staff_facing_sentences(cleaned)
     cleaned = redact_pii(cleaned)
-    return _concise_telegram_reply(cleaned)
+    return _concise_telegram_reply(cleaned, intent_label=intent_label)
 
 
 def _strip_staff_facing_prefixes(text: str) -> str:
@@ -424,7 +436,7 @@ def _is_staff_facing_sentence(sentence: str) -> bool:
     return any(marker in lowered for marker in STAFF_FACING_SENTENCE_MARKERS)
 
 
-def _concise_telegram_reply(text: str) -> str:
+def _concise_telegram_reply(text: str, intent_label: str | None = None) -> str:
     """Shape the cleaned reply into a short, mobile-friendly Telegram message.
 
     Drops long add-on/overtime/fee detail lines (pricing summarization), caps the
@@ -445,9 +457,12 @@ def _concise_telegram_reply(text: str) -> str:
     if not body:
         return ""
 
-    if "member of our team can help you choose" not in body.lower():
-        body = f"{body}\n\n{TEAM_HELP_CLOSING}"
-    return body
+    closing = followup_sentence_for_intent(intent_label or "pricing_request")
+    processed = apply_intent_followup_sentence(body, intent_label or "pricing_request")
+    if processed.endswith(closing) and not body.lower().endswith(closing.lower()):
+        prefix = processed[: -len(closing)].rstrip()
+        return f"{prefix}\n\n{closing}"
+    return processed
 
 
 def _is_addon_detail_line(line: str) -> bool:

@@ -5,7 +5,7 @@ import {
 } from 'lucide-react'
 import { RiskBadge, TaskStatusBadge, EscalationStatusBadge } from '../components/ui/Badge'
 import { formatDateTime, formatRelative } from '../utils/date'
-import { isAutoReplyMessage } from '../utils/suggestedReply'
+import { autoReplySkipLabel, isAutoReplyMessage } from '../utils/suggestedReply'
 import type { ConversationDetail, Message, SuggestedReply } from '../types'
 
 export type ConversationTab = 'tasks' | 'escalations' | 'audit'
@@ -115,6 +115,7 @@ function SuggestedReplyCard({
 }: SuggestedReplyCardProps) {
   const isGenerating = generationStatus === 'pending'
   const isSendingTelegram = telegramReplyStatus === 'pending'
+  const autoReplySkipMessage = autoReplySkipLabel(conv.auto_reply_skip_reason)
 
   return (
     <AnimatePresence>
@@ -128,9 +129,9 @@ function SuggestedReplyCard({
           <div className="flex items-center gap-2 mb-2">
             <Sparkles className="w-3.5 h-3.5 text-accent" />
             <span className="text-xs font-semibold text-text-primary">AI suggested reply</span>
-            {import.meta.env.DEV && conv.auto_reply_skip_reason && (
-              <span className="text-[10px] text-text-muted font-mono">
-                (auto-reply skipped: {conv.auto_reply_skip_reason})
+            {import.meta.env.DEV && autoReplySkipMessage && (
+              <span className="text-[10px] text-text-muted">
+                ({autoReplySkipMessage})
               </span>
             )}
           </div>

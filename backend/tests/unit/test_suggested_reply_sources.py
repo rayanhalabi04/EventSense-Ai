@@ -6,8 +6,15 @@ while still listing every *distinct* document and preserving ranking order.
 """
 from uuid import uuid4
 
+import pytest
+
 from app.services.rag_service import RagResult, RagSource
-from app.services.suggested_reply_service import generate_reply_text
+from app.services.llm_service import FakeLLMClient
+from app.services.suggested_reply_service import (
+    apply_intent_followup_sentence,
+    generate_reply_text,
+    generate_reply_text_with_optional_llm,
+)
 
 
 def _source(
@@ -244,3 +251,206 @@ def test_package_reply_uses_source_content_without_document_label() -> None:
     assert "based on our" not in generated.suggested_text.lower()
     assert "wedding package faq:" not in generated.suggested_text.lower()
     assert "q:" not in generated.suggested_text.lower()
+
+
+@pytest.mark.asyncio
+async def test_llm_error_pricing_template_fallback_lists_all_packages() -> None:
+    class ErrorLLMClient:
+        async def generate_suggested_reply(self, request):
+            raise TimeoutError("simulated timeout")
+
+    document_id = uuid4()
+    rag_result = RagResult(
+        query="Can you send me your wedding package prices?",
+        answer_supported=True,
+        sources=[
+            _source(
+                document_id=document_id,
+                title="Pricing Packages",
+                document_type="pricing",
+                content=(
+                    "ELEGANT WEDDINGS - PRICING PACKAGES "
+                    "1. CLASSIC PACKAGE - $3,500 Includes: Venue setup. "
+                    "Guest count limit: Up to 80 guests. "
+                    "2. PREMIUM PACKAGE - $6,800 Includes: Full venue decoration. "
+                    "Guest count limit: Up to 150 guests. "
+                    "3. LUXURY PACKAGE - $10,500 Includes: Premium decoration. "
+                    "Guest count limit: Up to 250 guests."
+                ),
+                score=0.91,
+            )
+        ],
+    )
+
+    generated = await generate_reply_text_with_optional_llm(
+        rag_result=rag_result,
+        message_body="Can you send me your wedding package prices?",
+        intent_label="pricing_request",
+        risk_level="low",
+        risk_reason="pricing_request is a routine planning request.",
+        tenant_slug="elegant-weddings",
+        conversation_memory=[],
+        llm_client_factory=lambda: ErrorLLMClient(),
+    )
+
+    text = generated.suggested_text.lower()
+    assert generated.generation_method == "template_v1"
+    assert generated.fallback_reason == "llm_error:TimeoutError"
+    assert "classic package" in text
+    assert "$3,500" in generated.suggested_text
+    assert "premium package" in text
+    assert "$6,800" in generated.suggested_text
+    assert "luxury package" in text
+    assert "$10,500" in generated.suggested_text
+    assert "up to 80 guests" in text
+    assert "up to 150 guests" in text
+    assert "up to 250 guests" in text
+    assert "our team will review your request" not in text
+
+
+def test_guest_count_question_still_uses_guest_count_branch() -> None:
+    document_id = uuid4()
+    rag_result = RagResult(
+        query="Can we add more guests after booking?",
+        answer_supported=True,
+        sources=[
+            _source(
+                document_id=document_id,
+                title="Guest Count FAQ",
+                document_type="faq",
+                content=(
+                    "Q: Can I change my guest count after booking? A: Guest count "
+                    "changes must be confirmed at least 10 days before the event. "
+                    "Changes may affect catering and seating arrangements."
+                ),
+                score=0.89,
+            )
+        ],
+    )
+
+    generated = generate_reply_text(
+        rag_result=rag_result,
+        message_body="Can we add more guests after booking?",
+        risk_level="low",
+        intent_label="guest_count_change",
+    )
+
+    text = generated.suggested_text.lower()
+    assert generated.answer_supported is True
+    assert "guest count changes must be confirmed" in text
+    assert "choose the best option" not in text
+    assert "confirm what changes are still possible" in text
+
+
+def test_cancellation_reply_uses_cancellation_specific_followup() -> None:
+    document_id = uuid4()
+    rag_result = RagResult(
+        query="I want to cancel my booking. Is my deposit refundable?",
+        answer_supported=True,
+        sources=[
+            _source(
+                document_id=document_id,
+                title="Deposit Policy",
+                document_type="deposit_policy",
+                content="The booking deposit is non-refundable after booking confirmation.",
+                score=0.92,
+            )
+        ],
+    )
+
+    generated = generate_reply_text(
+        rag_result=rag_result,
+        message_body="I want to cancel my booking. Is my deposit refundable?",
+        risk_level="medium",
+        intent_label="cancellation_request",
+    )
+
+    text = generated.suggested_text.lower()
+    assert "non-refundable after booking confirmation" in text
+    assert "choose the best option" not in text
+    assert "cancellation next steps" in text
+
+
+@pytest.mark.asyncio
+async def test_complaint_llm_reply_replaces_pricing_followup() -> None:
+    document_id = uuid4()
+    rag_result = RagResult(
+        query="The decoration was wrong and I want to complain.",
+        answer_supported=True,
+        sources=[
+            _source(
+                document_id=document_id,
+                title="Complaint Handling",
+                document_type="faq",
+                content="Decoration complaints are reviewed by a manager before the team follows up.",
+                score=0.9,
+            )
+        ],
+    )
+    fake = FakeLLMClient(
+        "I'm sorry to hear this. A member of our team can help you choose the best option based on your event needs."
+    )
+
+    generated = await generate_reply_text_with_optional_llm(
+        rag_result=rag_result,
+        message_body="The decoration was wrong and I want to complain.",
+        intent_label="complaint",
+        risk_level="high",
+        risk_reason="complaint",
+        tenant_slug="elegant-weddings",
+        conversation_memory=[],
+        llm_client_factory=lambda: fake,
+    )
+
+    text = generated.suggested_text.lower()
+    assert generated.generation_method == "llm_v1"
+    assert "choose the best option" not in text
+    assert "manager or team member will review this carefully" in text
+
+
+def test_pricing_reply_can_use_pricing_followup() -> None:
+    document_id = uuid4()
+    rag_result = RagResult(
+        query="Can you send wedding package pricing?",
+        answer_supported=True,
+        sources=[
+            _source(
+                document_id=document_id,
+                title="Pricing Packages",
+                document_type="pricing",
+                content="1. CLASSIC PACKAGE - $3,500 Guest count limit: Up to 80 guests.",
+                score=0.91,
+            )
+        ],
+    )
+
+    generated = generate_reply_text(
+        rag_result=rag_result,
+        message_body="Can you send wedding package pricing?",
+        risk_level="low",
+        intent_label="pricing_request",
+    )
+
+    assert "choose the best option" in generated.suggested_text.lower()
+
+
+def test_payment_issue_gets_payment_specific_followup() -> None:
+    text = apply_intent_followup_sentence("Hi, thank you for your message.", "payment_issue")
+
+    lowered = text.lower()
+    assert "verify the payment status" in lowered
+    assert "choose the best option" not in lowered
+
+
+def test_intent_followup_is_not_duplicated() -> None:
+    text = (
+        "Hi, thank you for your message. "
+        "A member of our team can help you choose the best option based on your event needs. "
+        "A member of our team will review your booking details and follow up "
+        "with the cancellation next steps."
+    )
+
+    result = apply_intent_followup_sentence(text, "cancellation_request")
+
+    assert result.count("cancellation next steps") == 1
+    assert "choose the best option" not in result.lower()

@@ -7,7 +7,6 @@ import {
   CheckSquare,
   AlertTriangle,
   ClipboardList,
-  FlaskConical,
   LogOut,
 } from 'lucide-react'
 import { useAuthStore } from '../../store/authStore'
@@ -21,7 +20,6 @@ const navItems = [
   { to: '/escalations', icon: AlertTriangle, label: 'Escalations' },
   { to: '/documents', icon: FileText, label: 'Documents' },
   { to: '/audit-logs', icon: ClipboardList, label: 'Audit Logs', managerOnly: true },
-  { to: '/evaluation', icon: FlaskConical, label: 'Evaluation' },
 ]
 
 export function Sidebar() {

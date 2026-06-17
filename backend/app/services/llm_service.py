@@ -171,8 +171,11 @@ def _system_prompt() -> str:
         "asks for it. "
         "Always write complete sentences and finish every sentence — never stop mid-sentence or "
         "leave a dangling clause. End the message with proper punctuation. "
-        "End the message with: \"A member of our team can help you choose the best option based on "
-        "your event needs.\" "
+        "End with one short follow-up sentence that fits the detected intent: pricing/package "
+        "questions can mention helping choose the best option; cancellations should mention "
+        "cancellation next steps; payment issues should mention verifying payment status; "
+        "complaints should mention careful manager or team review; guest-count or urgent changes "
+        "should mention reviewing what changes are possible or next steps. "
         "Never mention drafts, internal notes, staff review, approval, or that the reply was sent "
         "automatically. Do not include source citations or labels — phrase any details naturally."
     )

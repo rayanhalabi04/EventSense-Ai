@@ -476,6 +476,58 @@ async def test_llm_error_uses_template_fallback(
     assert event.details["llm_fallback_reason"] == "llm_error:TimeoutError"
 
 
+async def test_llm_error_pricing_fallback_lists_all_packages(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    class ErrorLLMClient:
+        async def generate_suggested_reply(self, request):
+            raise TimeoutError("simulated timeout")
+
+    monkeypatch.setattr("app.services.suggested_reply_service.get_llm_client", lambda: ErrorLLMClient())
+    token = await login(client)
+    document = await create_document(
+        client,
+        token,
+        title="Pricing Packages",
+        document_type="pricing",
+        content_text=(
+            "ELEGANT WEDDINGS - PRICING PACKAGES "
+            "1. CLASSIC PACKAGE - $3,500 Includes: Venue setup. "
+            "Guest count limit: Up to 80 guests. "
+            "2. PREMIUM PACKAGE - $6,800 Includes: Full venue decoration. "
+            "Guest count limit: Up to 150 guests. "
+            "3. LUXURY PACKAGE - $10,500 Includes: Premium decoration. "
+            "Guest count limit: Up to 250 guests."
+        ),
+    )
+    simulated = await create_simulator_message(
+        client, token, body="Can you send me your wedding package prices?"
+    )
+
+    reply = await generate_reply(client, token, simulated["conversation_id"])
+
+    text = reply["suggested_text"].lower()
+    assert reply["generation_method"] == "template_v1"
+    assert reply["answer_supported"] is True
+    assert reply["source_document_ids"] == [document["id"]]
+    assert "classic package" in text
+    assert "$3,500" in reply["suggested_text"]
+    assert "premium package" in text
+    assert "$6,800" in reply["suggested_text"]
+    assert "luxury package" in text
+    assert "$10,500" in reply["suggested_text"]
+    assert "up to 80 guests" in text
+    assert "up to 150 guests" in text
+    assert "up to 250 guests" in text
+    assert "our team will review your request" not in text
+
+    event = await latest_generated_event(db_session, reply["id"])
+    assert event.details["generation_method"] == "template_v1"
+    assert event.details["llm_fallback_reason"] == "llm_error:TimeoutError"
+
+
 async def test_redis_memory_failure_does_not_break_suggested_reply(
     client: AsyncClient,
     monkeypatch: pytest.MonkeyPatch,

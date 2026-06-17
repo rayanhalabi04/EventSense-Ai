@@ -1,4 +1,5 @@
 import type { RiskLevel, TaskStatus, EscalationStatus, TaskPriority } from '../../types'
+import { getEscalationStatusLabel } from '../../utils/escalationStatus'
 
 interface BadgeProps {
   children: React.ReactNode
@@ -37,10 +38,10 @@ const PRIORITY_MAP: Record<TaskPriority, { label: string; variant: BadgeProps['v
 }
 
 const ESCALATION_STATUS_MAP: Record<EscalationStatus, { label: string; variant: BadgeProps['variant'] }> = {
-  open: { label: 'Open', variant: 'danger' },
-  acknowledged: { label: 'Acknowledged', variant: 'warning' },
+  open: { label: getEscalationStatusLabel('open'), variant: 'danger' },
+  in_review: { label: getEscalationStatusLabel('in_review'), variant: 'warning' },
   resolved: { label: 'Resolved', variant: 'success' },
-  dismissed: { label: 'Dismissed', variant: 'neutral' },
+  cancelled: { label: 'Cancelled', variant: 'neutral' },
 }
 
 type BadgeValue = string | null | undefined

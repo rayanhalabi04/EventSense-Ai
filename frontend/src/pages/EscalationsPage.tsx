@@ -8,15 +8,16 @@ import { PageLoader } from '../components/ui/LoadingSpinner'
 import { EmptyState } from '../components/ui/EmptyState'
 import { ErrorState } from '../components/ui/ErrorState'
 import { formatRelative } from '../utils/date'
+import { apiErrorDetail } from '../utils/apiError'
+import { ESCALATION_FILTER_TABS, ESCALATION_STATUS_OPTIONS } from '../utils/escalationStatus'
 import { useAuthStore } from '../store/authStore'
 import type { EscalationStatus } from '../types'
-
-const STATUS_TABS: { label: string; value: EscalationStatus | undefined }[] = [
-  { label: 'All', value: undefined },
-  { label: 'Open', value: 'open' },
-  { label: 'Acknowledged', value: 'acknowledged' },
-  { label: 'Resolved', value: 'resolved' },
-]
+import {
+  escalationMeta,
+  escalationReason,
+  formatEscalationTitle,
+  humanizeIntentLabel,
+} from '../utils/workflowDisplay'
 
 export function EscalationsPage() {
   const [statusFilter, setStatusFilter] = useState<EscalationStatus | undefined>('open')
@@ -25,6 +26,7 @@ export function EscalationsPage() {
 
   const escalations = useEscalations({ status: statusFilter })
   const updateEscalation = useUpdateEscalation()
+  const errorDetail = import.meta.env.DEV ? apiErrorDetail(escalations.error) : undefined
 
   const handleStatusChange = (id: string, status: EscalationStatus) => {
     updateEscalation.mutate({ id, data: { status } })
@@ -41,7 +43,7 @@ export function EscalationsPage() {
 
       {/* Status filter */}
       <div className="flex gap-1 mb-5 bg-surface-warm border border-border rounded-lg p-1 w-fit">
-        {STATUS_TABS.map((tab) => (
+        {ESCALATION_FILTER_TABS.map((tab) => (
           <button
             key={tab.label}
             type="button"
@@ -58,7 +60,11 @@ export function EscalationsPage() {
       {escalations.isLoading ? (
         <PageLoader />
       ) : escalations.isError ? (
-        <ErrorState onRetry={escalations.refetch} />
+        <ErrorState
+          message="Could not load escalations."
+          detail={errorDetail}
+          onRetry={escalations.refetch}
+        />
       ) : !escalations.data?.length ? (
         <EmptyState
           title="No escalations"
@@ -73,20 +79,53 @@ export function EscalationsPage() {
               initial={{ opacity: 0, y: 16 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ delay: i * 0.04 }}
-              className="card p-5"
+              className="card p-5 hover:bg-surface-warm transition-colors"
             >
-              <div className="flex items-start justify-between gap-4">
+              <div className="flex items-start gap-4">
+                <div className="w-10 h-10 rounded-lg bg-danger-soft text-danger flex items-center justify-center flex-shrink-0">
+                  <AlertTriangle className="w-5 h-5" />
+                </div>
+
                 <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2 mb-1.5">
-                    <p className="text-sm font-semibold text-text-primary">{esc.ai_summary || 'Escalation'}</p>
-                    {esc.risk_level && <RiskBadge level={esc.risk_level} />}
-                    <EscalationStatusBadge status={esc.status} />
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-center gap-2 mb-1.5">
+                        <p className="text-base font-semibold text-text-primary leading-snug">
+                          {formatEscalationTitle(esc)}
+                        </p>
+                        {esc.risk_level && <RiskBadge level={esc.risk_level} />}
+                        <EscalationStatusBadge status={esc.status} />
+                      </div>
+                      <p className="text-xs text-text-muted">{escalationMeta(esc)}</p>
+                    </div>
+
+                    {isManager && (
+                      <select
+                        value={esc.status}
+                        onChange={(e) => handleStatusChange(esc.id, e.target.value as EscalationStatus)}
+                        aria-label={`Change status for escalation: ${formatEscalationTitle(esc)}`}
+                        className="text-xs border border-border rounded-md px-2 py-1.5 text-text-muted bg-surface hover:bg-surface-warm transition-colors focus:outline-none flex-shrink-0"
+                      >
+                        {ESCALATION_STATUS_OPTIONS.map((option) => (
+                          <option key={option.value} value={option.value}>
+                            {option.label}
+                          </option>
+                        ))}
+                      </select>
+                    )}
                   </div>
-                  {esc.suggested_next_step && (
-                    <p className="text-sm text-text-muted mb-2">{esc.suggested_next_step}</p>
-                  )}
-                  <div className="flex items-center gap-4 text-xs text-text-muted">
-                    <span>{formatRelative(esc.created_at)}</span>
+
+                  <div className="mt-4 rounded-lg border border-border bg-surface px-4 py-3">
+                    <p className="text-[11px] font-medium uppercase tracking-wide text-text-muted">
+                      {humanizeIntentLabel(esc.intent_label)}
+                    </p>
+                    <p className="text-sm text-text-primary leading-relaxed mt-1">
+                      {escalationReason(esc)}
+                    </p>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-4 text-xs text-text-muted mt-4">
+                    <span>Created {formatRelative(esc.created_at)}</span>
                     {esc.conversation_id && (
                       <Link
                         to={`/inbox/${esc.conversation_id}`}
@@ -97,20 +136,6 @@ export function EscalationsPage() {
                     )}
                   </div>
                 </div>
-
-                {isManager && (
-                  <select
-                    value={esc.status}
-                    onChange={(e) => handleStatusChange(esc.id, e.target.value as EscalationStatus)}
-                    aria-label={`Change status for escalation: ${esc.ai_summary || esc.id}`}
-                    className="text-xs border border-border rounded-md px-2 py-1.5 text-text-muted bg-surface hover:bg-surface-warm transition-colors focus:outline-none flex-shrink-0"
-                  >
-                    <option value="open">Open</option>
-                    <option value="acknowledged">Acknowledge</option>
-                    <option value="resolved">Resolve</option>
-                    <option value="dismissed">Dismiss</option>
-                  </select>
-                )}
               </div>
             </m.div>
           ))}

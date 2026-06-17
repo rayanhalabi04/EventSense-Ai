@@ -26,6 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.message import Message
 from app.repositories.conversation_repository import ConversationRepository
 from app.repositories.message_repository import MessageRepository
+from app.services.automated_task_service import AutomatedTaskService
 from app.services.escalation_service import EscalationService
 from app.services.telegram_auto_reply_service import (
     AutoReplyDecision,
@@ -164,6 +165,12 @@ class InboundMessageProcessingService:
                 suggested_reply_id=suggested.id if suggested is not None else None,
                 escalation_id=None,
             )
+
+        await AutomatedTaskService(self.session).create_for_inbound_message(
+            tenant_id=tenant_id,
+            conversation_id=conversation_id,
+            message=message,
+        )
 
         # Not auto-sent: route to a human. Risky/complex intents and any high-risk
         # message become a manager escalation; everything else is a human-review

@@ -103,7 +103,7 @@ export function EvaluationPage() {
             <FlaskConical className="w-5 h-5 text-info" strokeWidth={1.75} />
           </div>
           <div>
-            <h1 className="font-display text-3xl font-medium text-text-primary">Evaluation</h1>
+            <h1 className="font-display text-3xl font-medium text-text-primary">AI Sandbox</h1>
           </div>
         </div>
         <p className="text-sm text-text-muted">
