@@ -20,6 +20,26 @@ export interface SuggestedReplyCardState {
   channel: string | null
 }
 
+const AUTO_REPLY_SKIP_LABELS: Record<string, string> = {
+  rag_provider_unavailable: 'Auto-send skipped: document search was temporarily unavailable',
+  embedding_provider_unavailable: 'Auto-send skipped: document search was temporarily unavailable',
+  no_rag_source: 'Auto-send skipped: no supporting company document was found',
+  guardrail_refusal: 'Auto-send skipped: safety rules require staff review',
+  auto_reply_disabled: 'Auto-send skipped: Telegram auto-send is disabled',
+  risk_not_low: 'Auto-send skipped: staff review is required for this risk level',
+  blocked_intent: 'Auto-send skipped: staff review is required for this request',
+  intent_not_allowed: 'Auto-send skipped: staff review is required for this request',
+  risky_keyword: 'Auto-send skipped: staff review is required for this request',
+  client_reply_empty: 'Auto-send skipped: the draft could not be prepared for Telegram',
+  suggested_reply_empty: 'Auto-send skipped: the draft was empty',
+  telegram_send_failed: 'Auto-send skipped: Telegram delivery failed',
+}
+
+export function autoReplySkipLabel(reason: string | null | undefined): string | null {
+  if (!reason) return null
+  return AUTO_REPLY_SKIP_LABELS[reason] ?? 'Auto-send skipped: staff review is required'
+}
+
 export function getSuggestedReplyCardState(
   reply: SuggestedReply | null | undefined,
 ): SuggestedReplyCardState {
