@@ -8,8 +8,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.security import hash_password
 from app.models.conversation import Conversation, ConversationStatus
 from app.models.message import Message, MessageDirection, MessageStatus
+from app.models.task import Task, TaskStatus
 from app.models.user import User, UserRole
-from app.services.intent_classifier_service import INTENT_LABELS
+from app.services.intent_classifier_service import INTENT_LABELS, IntentClassification
 
 
 pytestmark = pytest.mark.asyncio
@@ -108,6 +109,41 @@ async def test_simulator_stores_inbound_message_memory(
     tenant_id, message = recorded[0]
     assert str(tenant_id) == response.json()["tenant_id"]
     assert str(message.id) == response.json()["message_id"]
+
+
+async def test_simulator_task_worthy_message_creates_follow_up_task(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    token = await elegant_token(client)
+    monkeypatch.setattr(
+        "app.services.simulator_service.IntentClassifierService.classify",
+        lambda body: IntentClassification(label="guest_count_change", confidence=0.95),
+    )
+
+    response = await client.post(
+        "/api/v1/simulator/messages",
+        headers=auth_headers(token),
+        json={
+            "client_name": "Maya Haddad",
+            "body": "We need to change our guest count from 80 to 150 for next week.",
+        },
+    )
+
+    assert response.status_code == 201
+    conversation_id = UUID(response.json()["conversation_id"])
+    message_id = UUID(response.json()["message_id"])
+    tasks = (
+        await db_session.execute(
+            select(Task).where(Task.conversation_id == conversation_id)
+        )
+    ).scalars().all()
+    assert len(tasks) == 1
+    assert tasks[0].message_id == message_id
+    assert tasks[0].title == "Review guest count change"
+    assert tasks[0].status is TaskStatus.open
+    assert tasks[0].source_type == "inbound_auto"
 
 
 async def test_simulator_creates_new_conversation_for_unknown_client(client: AsyncClient):

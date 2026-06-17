@@ -215,6 +215,46 @@ async def test_manager_can_list_own_tenant_escalations(client: AsyncClient):
     assert [item["id"] for item in response.json()] == [escalation["id"]]
 
 
+async def test_manager_can_filter_escalations_by_backend_status(client: AsyncClient):
+    token = await login(client)
+    open_conversation = await create_conversation(client, token, "Open Escalation Client")
+    review_conversation = await create_conversation(client, token, "Review Escalation Client")
+    resolved_conversation = await create_conversation(client, token, "Resolved Escalation Client")
+    open_escalation = await create_escalation(client, token, open_conversation["id"])
+    review_escalation = await create_escalation(
+        client,
+        token,
+        review_conversation["id"],
+        status="in_review",
+    )
+    resolved_escalation = await create_escalation(
+        client,
+        token,
+        resolved_conversation["id"],
+        status="resolved",
+    )
+
+    open_response = await client.get(
+        "/api/v1/escalations?status=open",
+        headers=auth_headers(token),
+    )
+    review_response = await client.get(
+        "/api/v1/escalations?status=in_review",
+        headers=auth_headers(token),
+    )
+    resolved_response = await client.get(
+        "/api/v1/escalations?status=resolved",
+        headers=auth_headers(token),
+    )
+
+    assert open_response.status_code == 200
+    assert review_response.status_code == 200
+    assert resolved_response.status_code == 200
+    assert [item["id"] for item in open_response.json()] == [open_escalation["id"]]
+    assert [item["id"] for item in review_response.json()] == [review_escalation["id"]]
+    assert [item["id"] for item in resolved_response.json()] == [resolved_escalation["id"]]
+
+
 async def test_tenant_a_cannot_see_tenant_b_escalations(client: AsyncClient):
     elegant_token = await login(client)
     royal_token = await login(
