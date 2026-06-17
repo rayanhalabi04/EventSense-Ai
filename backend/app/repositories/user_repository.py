@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from uuid import UUID
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.user import User, UserRole
@@ -25,3 +26,28 @@ class UserRepository:
         if user is None or user.role != UserRole.manager:
             return None
         return user
+
+    async def get_automation_actor_for_tenant(self, tenant_id: UUID) -> User | None:
+        manager_result = await self.session.execute(
+            select(User)
+            .where(
+                User.tenant_id == tenant_id,
+                User.is_active.is_(True),
+                User.role == UserRole.manager,
+            )
+            .order_by(User.created_at.asc(), User.id.asc())
+        )
+        manager = manager_result.scalars().first()
+        if manager is not None:
+            return manager
+
+        staff_result = await self.session.execute(
+            select(User)
+            .where(
+                User.tenant_id == tenant_id,
+                User.is_active.is_(True),
+                User.role == UserRole.staff,
+            )
+            .order_by(User.created_at.asc(), User.id.asc())
+        )
+        return staff_result.scalars().first()
