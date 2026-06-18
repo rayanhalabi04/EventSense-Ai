@@ -1,11 +1,12 @@
 import { useState } from 'react'
-import { CheckCircle } from 'lucide-react'
+import { CalendarDays, CheckCircle } from 'lucide-react'
 import { useTasks, useUpdateTask } from '../hooks/useTasks'
 import { Badge, TaskStatusBadge } from '../components/ui/Badge'
 import { PageLoader } from '../components/ui/LoadingSpinner'
 import { EmptyState } from '../components/ui/EmptyState'
 import { ErrorState } from '../components/ui/ErrorState'
-import type { TaskStatus } from '../types'
+import { CalendarEventModal, type CalendarEventDraft } from '../components/CalendarEventModal'
+import type { Task, TaskStatus } from '../types'
 import {
   extractOriginalMessage,
   formatRiskLabel,
@@ -26,12 +27,30 @@ const STATUS_TABS: { label: string; value: TaskStatus | undefined }[] = [
 
 export function TasksPage() {
   const [statusFilter, setStatusFilter] = useState<TaskStatus | undefined>('open')
+  const [calendarDraft, setCalendarDraft] = useState<CalendarEventDraft | null>(null)
 
   const tasks = useTasks({ status: statusFilter })
   const updateTask = useUpdateTask()
 
   const handleStatusChange = (id: string, status: TaskStatus) => {
     updateTask.mutate({ id, data: { status } })
+  }
+
+  const openTaskCalendarModal = (task: Task) => {
+    const start = task.due_at ? new Date(task.due_at) : nextTaskStart()
+    if (!task.due_at) start.setHours(9, 0, 0, 0)
+    const end = new Date(start.getTime() + 30 * 60_000)
+    setCalendarDraft({
+      title: task.title,
+      description: task.description ?? '',
+      date: dateInputValue(start),
+      startTime: timeInputValue(start),
+      endTime: timeInputValue(end),
+      timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
+      related_conversation_id: task.conversation_id ?? null,
+      related_message_id: task.message_id ?? null,
+      related_task_id: task.id,
+    })
   }
 
   return (
@@ -112,6 +131,14 @@ export function TasksPage() {
                         <option value="completed">Completed</option>
                         <option value="cancelled">Cancelled</option>
                       </select>
+                      <button
+                        type="button"
+                        onClick={() => openTaskCalendarModal(task)}
+                        className="btn-secondary px-3 py-1.5 text-xs"
+                      >
+                        <CalendarDays className="h-3.5 w-3.5" />
+                        Add to Calendar
+                      </button>
                     </div>
 
                     {originalMessage && (
@@ -136,6 +163,27 @@ export function TasksPage() {
           })}
         </div>
       )}
+      {calendarDraft && (
+        <CalendarEventModal
+          open={Boolean(calendarDraft)}
+          draft={calendarDraft}
+          onClose={() => setCalendarDraft(null)}
+        />
+      )}
     </div>
   )
+}
+
+function nextTaskStart(): Date {
+  const start = new Date()
+  start.setDate(start.getDate() + 1)
+  return start
+}
+
+function dateInputValue(date: Date): string {
+  return date.toISOString().slice(0, 10)
+}
+
+function timeInputValue(date: Date): string {
+  return date.toTimeString().slice(0, 5)
 }
