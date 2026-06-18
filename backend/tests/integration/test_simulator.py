@@ -82,6 +82,30 @@ async def test_simulator_creates_inbound_message_with_correct_fields(
     assert message.classified_at is not None
 
 
+@pytest.mark.parametrize(
+    "body",
+    [
+        "I want to ask about your wedding packages.",
+        "Can you send me your wedding package prices?",
+        "What packages do you offer for weddings?",
+    ],
+)
+async def test_simulator_package_pricing_messages_route_to_pricing_request(
+    client: AsyncClient,
+    body: str,
+):
+    token = await elegant_token(client)
+
+    response = await client.post(
+        "/api/v1/simulator/messages",
+        headers=auth_headers(token),
+        json={"client_name": "Maya Haddad", "body": body},
+    )
+
+    assert response.status_code == 201
+    assert response.json()["intent_label"] == "pricing_request"
+
+
 async def test_simulator_stores_inbound_message_memory(
     client: AsyncClient,
     monkeypatch: pytest.MonkeyPatch,

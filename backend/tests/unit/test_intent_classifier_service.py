@@ -1,3 +1,5 @@
+import pytest
+
 from app.services import intent_classifier_service
 from app.services.intent_classifier_service import INTENT_LABELS, IntentClassifierService
 
@@ -6,6 +8,35 @@ def test_intent_classifier_predicts_valid_label():
     result = IntentClassifierService.classify("How much does your gold wedding package cost?")
 
     assert result.label in INTENT_LABELS
+    assert result.label == "pricing_request"
+    assert 0.0 <= result.confidence <= 1.0
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "I want to ask about your wedding packages.",
+        "Can you send me your wedding package prices?",
+        "wedding packages",
+        "package",
+        "packages",
+        "pricing",
+        "price",
+        "cost",
+        "rates",
+        "quote",
+    ],
+)
+def test_pricing_package_keywords_route_to_pricing_request(body):
+    result = IntentClassifierService.classify(body)
+
+    assert result.label == "pricing_request"
+    assert 0.0 <= result.confidence <= 1.0
+
+
+def test_package_offering_question_routes_to_pricing_request():
+    result = IntentClassifierService.classify("What packages do you offer for weddings?")
+
     assert result.label == "pricing_request"
     assert 0.0 <= result.confidence <= 1.0
 

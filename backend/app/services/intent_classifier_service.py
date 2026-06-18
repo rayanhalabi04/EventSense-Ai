@@ -61,6 +61,13 @@ class IntentClassifierService:
             if label not in INTENT_LABELS:
                 return _fallback_classify(text)
             confidence = _predict_confidence(model, text, label)
+            keyword_classification = _pricing_keyword_classification(
+                text,
+                current_label=label,
+                current_confidence=confidence,
+            )
+            if keyword_classification is not None:
+                return keyword_classification
             return IntentClassification(label=label, confidence=confidence)
         except Exception:
             # Fallback keeps inbound message creation working if the artifact is incompatible.
@@ -189,6 +196,84 @@ def _high_risk_operational_classification(text: str) -> IntentClassification | N
     return None
 
 
+_LOW_CONFIDENCE_KEYWORD_OVERRIDE_THRESHOLD = 0.45
+_PRICING_KEYWORD_PATTERNS = (
+    r"\bpricing\b",
+    r"\bprices?\b",
+    r"\bcosts?\b",
+    r"\brates?\b",
+    r"\bquotes?\b",
+    r"\bhow\s+much\b",
+)
+_PACKAGE_KEYWORD_PATTERNS = (
+    r"\bpackages?\b",
+)
+_PACKAGE_SERVICE_PATTERNS = (
+    r"\binclud(?:e|es|ed|ing)\b",
+    r"\bexplain\b",
+    r"\boptions?\b",
+)
+_PACKAGE_AVAILABILITY_PATTERNS = (
+    r"\bavailab(?:le|ility)\b",
+    r"\bfree\s+on\b",
+    r"\bdate\s+open\b",
+)
+
+
+def _pricing_keyword_classification(
+    text: str,
+    *,
+    current_label: str | None = None,
+    current_confidence: float | None = None,
+) -> IntentClassification | None:
+    normalized = text.lower()
+    has_explicit_pricing_word = any(
+        re.search(pattern, normalized) for pattern in _PRICING_KEYWORD_PATTERNS
+    )
+    has_package_word = any(
+        re.search(pattern, normalized) for pattern in _PACKAGE_KEYWORD_PATTERNS
+    )
+    if not has_explicit_pricing_word and not has_package_word:
+        return None
+    if (
+        has_package_word
+        and not has_explicit_pricing_word
+        and any(re.search(pattern, normalized) for pattern in _PACKAGE_AVAILABILITY_PATTERNS)
+    ):
+        return None
+    if (
+        has_package_word
+        and not has_explicit_pricing_word
+        and current_label == "service_question"
+        and any(re.search(pattern, normalized) for pattern in _PACKAGE_SERVICE_PATTERNS)
+    ):
+        return None
+    can_override_service_package_question = (
+        has_package_word
+        and current_label == "service_question"
+        and current_confidence is not None
+        and current_confidence <= _LOW_CONFIDENCE_KEYWORD_OVERRIDE_THRESHOLD
+    )
+    if (
+        current_label not in (None, "other", "availability_question")
+        and not can_override_service_package_question
+    ):
+        if not has_explicit_pricing_word:
+            return None
+        if (
+            current_confidence is not None
+            and current_confidence > _LOW_CONFIDENCE_KEYWORD_OVERRIDE_THRESHOLD
+        ):
+            return None
+    if (
+        current_confidence is not None
+        and current_confidence > _LOW_CONFIDENCE_KEYWORD_OVERRIDE_THRESHOLD
+        and current_label != "other"
+    ):
+        return None
+    return IntentClassification(label="pricing_request", confidence=0.65, used_fallback=True)
+
+
 def _fallback_classify(text: str) -> IntentClassification:
     """Rule-based fallback used only when the trained artifact cannot be used."""
     normalized = text.lower()
@@ -198,6 +283,18 @@ def _fallback_classify(text: str) -> IntentClassification:
     high_risk = _high_risk_operational_classification(text)
     if high_risk is not None:
         return high_risk
+    if (
+        any(re.search(pattern, normalized) for pattern in _PACKAGE_KEYWORD_PATTERNS)
+        and any(re.search(pattern, normalized) for pattern in _PACKAGE_SERVICE_PATTERNS)
+    ):
+        return IntentClassification(
+            label="service_question",
+            confidence=0.55,
+            used_fallback=True,
+        )
+    keyword_classification = _pricing_keyword_classification(text)
+    if keyword_classification is not None:
+        return keyword_classification
     rules: tuple[tuple[str, tuple[str, ...]], ...] = (
         ("human_escalation", ("human", "manager", "supervisor", "agent", "person")),
         ("cancellation_request", ("cancel", "cancellation")),
@@ -205,7 +302,6 @@ def _fallback_classify(text: str) -> IntentClassification:
         ("complaint", ("complaint", "unhappy", "upset", "disappointed", "bad service", "unacceptable")),
         ("guest_count_change", ("guest count", "number of guests", "more guests", "fewer guests")),
         ("urgent_change", ("urgent", "asap", "today", "tomorrow", "change the time", "last minute")),
-        ("pricing_request", ("price", "pricing", "cost", "quote", "package", "packages", "how much")),
         ("availability_question", ("available", "availability", "free on", "date open")),
         ("service_question", ("service", "services", "offer", "options", "included")),
         ("booking_inquiry", ("book", "booking", "reserve", "reservation")),
