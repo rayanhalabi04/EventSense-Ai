@@ -196,6 +196,10 @@ function CalendarAvailabilityCard({ availability }: { availability?: CalendarAva
         ? { label: 'Busy', className: 'text-danger', Icon: XCircle }
         : { label: 'Unknown', className: 'text-text-muted', Icon: Clock }
   const StatusIcon = status.Icon
+  const requestedLabel =
+    availability.requested_label ??
+    (availability.requested_start_time ? formatDateTime(availability.requested_start_time) : 'Needs preferred time')
+  const reasonLabel = availability.reason_label ?? availability.reason.replace(/_/g, ' ')
 
   return (
     <div className="border-t border-border px-4 py-3 bg-surface">
@@ -206,11 +210,7 @@ function CalendarAvailabilityCard({ availability }: { availability?: CalendarAva
       <div className="space-y-1.5 text-xs">
         <div className="flex items-center justify-between gap-3">
           <span className="text-text-muted">Requested</span>
-          <span className="text-text-primary text-right">
-            {availability.requested_start_time
-              ? formatDateTime(availability.requested_start_time)
-              : 'Needs preferred time'}
-          </span>
+          <span className="text-text-primary text-right">{requestedLabel}</span>
         </div>
         <div className="flex items-center justify-between gap-3">
           <span className="text-text-muted">Status</span>
@@ -223,7 +223,7 @@ function CalendarAvailabilityCard({ availability }: { availability?: CalendarAva
           <div className="flex items-center justify-between gap-3">
             <span className="text-text-muted">Reason</span>
             <span className="text-text-primary text-right capitalize">
-              {availability.reason.replace(/_/g, ' ')}
+              {reasonLabel}
             </span>
           </div>
         )}

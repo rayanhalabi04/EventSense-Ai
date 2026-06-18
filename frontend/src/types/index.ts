@@ -343,6 +343,8 @@ export interface CalendarAvailabilityResponse {
   alternatives: CalendarAvailabilitySlot[]
   requested_start_time?: string | null
   requested_end_time?: string | null
+  requested_label?: string | null
+  reason_label?: string | null
   timezone: string
 }
 
