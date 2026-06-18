@@ -458,6 +458,8 @@ def _concise_telegram_reply(text: str, intent_label: str | None = None) -> str:
     body = safe_trim_client_message(body, TELEGRAM_MAX_REPLY_CHARS)
     if not body:
         return ""
+    if _is_guest_count_price_impact_reply(body):
+        return body
 
     closing = followup_sentence_for_intent(intent_label or "pricing_request")
     processed = apply_intent_followup_sentence(body, intent_label or "pricing_request")
@@ -470,6 +472,17 @@ def _concise_telegram_reply(text: str, intent_label: str | None = None) -> str:
 def _is_addon_detail_line(line: str) -> bool:
     lowered = line.lower()
     return any(marker in lowered for marker in ADDON_DETAIL_MARKERS)
+
+
+def _is_guest_count_price_impact_reply(text: str) -> bool:
+    lowered = text.lower()
+    return (
+        "changing the guest count from" in lowered
+        and (
+            ("updated invoice" in lowered and "before final approval" in lowered)
+            or "final invoice before approval" in lowered
+        )
+    )
 
 
 def staff_facing_telegram_text(text: str) -> str:

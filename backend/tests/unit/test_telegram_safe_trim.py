@@ -124,6 +124,22 @@ def test_client_facing_text_removes_raw_faq_source_formatting():
     assert "Guest count changes usually need to be confirmed" in result
 
 
+def test_client_facing_pricing_text_has_one_generic_next_step():
+    text = (
+        "Thank you for your interest in our wedding packages! "
+        "The Classic Package starts at $3,500 for up to 80 guests. "
+        "We would be happy to help you choose the best option. "
+        "A member of our team can help you choose the best option based on your event needs."
+    )
+
+    result = client_facing_auto_reply_text(text, intent_label="pricing_request")
+    lowered = result.lower()
+
+    assert "classic package starts at $3,500" in lowered
+    assert lowered.count("choose the best option") == 1
+    assert "we would be happy to help you choose" not in lowered
+
+
 def test_staff_facing_text_removes_raw_source_labels_before_manual_send():
     text = (
         "According to our Cancellation Policy: Q: Is my deposit refundable? "

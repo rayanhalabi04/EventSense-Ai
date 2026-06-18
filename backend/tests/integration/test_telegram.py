@@ -380,6 +380,26 @@ async def test_inbound_telegram_message_creates_message(
     assert message.risk_level is not None
 
 
+async def test_telegram_package_pricing_message_routes_to_pricing_request(
+    client: AsyncClient,
+    db_session: AsyncSession,
+):
+    response = await post_telegram_update(
+        client,
+        telegram_update(
+            chat_id=123457,
+            message_id=78,
+            text="I want to ask about your wedding packages.",
+        ),
+    )
+
+    assert response.status_code == 200
+    message = await db_session.get(Message, UUID(response.json()["message_id"]))
+    assert message is not None
+    assert message.source == "telegram"
+    assert message.intent_label == "pricing_request"
+
+
 async def test_telegram_pii_contact_message_redacts_reply_memory_and_audits(
     client: AsyncClient,
     db_session: AsyncSession,
@@ -623,6 +643,7 @@ async def test_low_risk_pricing_request_with_source_auto_sends_when_enabled(
             ),
         }
     ]
+    assert "choose the best option" in sent[0]["text"].lower()
     outbound = (
         await db_session.execute(
             select(Message).where(
@@ -2307,6 +2328,192 @@ async def test_telegram_followup_uses_same_conversation_memory_for_rag(
     )
 
 
+async def test_telegram_guest_count_price_followup_mentions_previous_change(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    enable_auto_reply(monkeypatch)
+    install_scoped_fake_memory(monkeypatch)
+    token = await login(client)
+    await create_document(
+        client,
+        token,
+        title="Guest Count Price FAQ",
+        document_type="faq",
+        content_text=(
+            "The Pearl Ballroom Package, which starts at 7,200 USD, accommodates "
+            "up to 180 guests. Guest count changes may affect the final invoice "
+            "because catering, seating, capacity, staffing, setup, and package "
+            "requirements are based on the confirmed guest count. The team confirms "
+            "the updated guest count before quoting any revised total."
+        ),
+    )
+    sent: list[str] = []
+
+    async def fake_send_message(self, chat_id: str, text: str):
+        sent.append(text)
+        return {"ok": True, "result": {"message_id": 9000 + len(sent)}}
+
+    monkeypatch.setattr("app.services.telegram_service.TelegramService.send_message", fake_send_message)
+
+    force_intent(monkeypatch, "guest_count_change", 0.95)
+    first = await post_telegram_update(
+        client,
+        telegram_update(
+            chat_id=3011,
+            message_id=3011,
+            text="We need to change the guest count from 150 to 220.",
+        ),
+    )
+    assert first.status_code == 200
+
+    force_intent(monkeypatch, "pricing_request", 0.95)
+    second = await post_telegram_update(
+        client,
+        telegram_update(
+            chat_id=3011,
+            message_id=3012,
+            text="Will that change the price?",
+        ),
+    )
+
+    assert second.status_code == 200
+    assert second.json()["is_new_conversation"] is False
+    assert second.json()["conversation_id"] == first.json()["conversation_id"]
+    assert len(sent) == 1
+
+    reply = (
+        await db_session.execute(
+            select(SuggestedReply).where(
+                SuggestedReply.message_id == UUID(second.json()["message_id"])
+            )
+        )
+    ).scalar_one()
+    text = reply.suggested_text.lower()
+    sent_text = sent[0].lower()
+    assert reply.answer_supported is True
+    assert "changing the guest count from 150 to 220" in text
+    assert "will likely affect the price or final invoice" in text
+    assert "220 guests may affect package capacity" in text
+    assert "updated invoice" in text
+    assert "package capacity" in text
+    assert "pearl ballroom" not in text
+    assert "choose the best option" not in text
+    assert "classic package" not in text
+    assert "7,200 a member" not in text
+    assert "our a member" not in text
+    assert "for up to 180 guests" not in text
+    assert reply.suggested_text.rstrip().endswith(".")
+    assert "changing the guest count from 150 to 220" in sent_text
+    assert "will likely affect the price or final invoice" in sent_text
+    assert "220 guests may affect package capacity" in sent_text
+    assert "updated invoice" in sent_text
+    assert "package capacity" in sent_text
+    assert "pearl ballroom" not in sent_text
+    assert "choose the best option" not in sent_text
+    assert "classic package" not in sent_text
+    assert "7,200 a member" not in sent_text
+    assert "our a member" not in sent_text
+    assert "for up to 180 guests" not in sent_text
+    assert sent[0].rstrip().endswith(".")
+    assert_no_raw_source_formatting(reply.suggested_text)
+    assert_no_raw_source_formatting(sent[0])
+
+    generated_event = (
+        await db_session.execute(
+            select(AuditLog).where(AuditLog.resource_id == str(reply.id))
+        )
+    ).scalars().all()
+    assert any(
+        "guest count increased from 150 to 220 guests"
+        in str(event.details.get("rag_query", "")).lower()
+        for event in generated_event
+    )
+
+
+async def test_telegram_guest_count_price_followup_mentions_supported_package_at_capacity(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    enable_auto_reply(monkeypatch)
+    install_scoped_fake_memory(monkeypatch)
+    token = await login(client)
+    await create_document(
+        client,
+        token,
+        title="Guest Count Price FAQ",
+        document_type="faq",
+        content_text=(
+            "The Pearl Ballroom Package, which starts at 7,200 USD, accommodates "
+            "up to 180 guests. Guest count changes may affect the final invoice "
+            "because catering, seating, capacity, staffing, setup, and package "
+            "requirements are based on the confirmed guest count."
+        ),
+    )
+    sent: list[str] = []
+
+    async def fake_send_message(self, chat_id: str, text: str):
+        sent.append(text)
+        return {"ok": True, "result": {"message_id": 9100 + len(sent)}}
+
+    monkeypatch.setattr("app.services.telegram_service.TelegramService.send_message", fake_send_message)
+
+    force_intent(monkeypatch, "guest_count_change", 0.95)
+    first = await post_telegram_update(
+        client,
+        telegram_update(
+            chat_id=3012,
+            message_id=3013,
+            text="We need to change the guest count from 150 to 180",
+        ),
+    )
+    assert first.status_code == 200
+
+    force_intent(monkeypatch, "pricing_request", 0.95)
+    second = await post_telegram_update(
+        client,
+        telegram_update(
+            chat_id=3012,
+            message_id=3014,
+            text="will that change the price?",
+        ),
+    )
+
+    assert second.status_code == 200
+    assert second.json()["is_new_conversation"] is False
+    assert second.json()["conversation_id"] == first.json()["conversation_id"]
+    assert len(sent) == 1
+
+    reply = (
+        await db_session.execute(
+            select(SuggestedReply).where(
+                SuggestedReply.message_id == UUID(second.json()["message_id"])
+            )
+        )
+    ).scalar_one()
+    text = reply.suggested_text.lower()
+    sent_text = sent[0].lower()
+    assert reply.answer_supported is True
+    assert "changing the guest count from 150 to 180" in text
+    assert "may affect the final invoice" in text
+    assert "pearl ballroom package supports up to 180 guests" in text
+    assert "updated package, capacity, and final invoice" in text
+    assert "choose the best option" not in text
+    assert "7,200 a member" not in text
+    assert "7,200" not in text
+    assert "our a member" not in text
+    assert reply.suggested_text.rstrip().endswith(".")
+    assert "changing the guest count from 150 to 180" in sent_text
+    assert "pearl ballroom package supports up to 180 guests" in sent_text
+    assert "choose the best option" not in sent_text
+    assert "7,200 a member" not in sent_text
+    assert "7,200" not in sent_text
+    assert "our a member" not in sent_text
+    assert sent[0].rstrip().endswith(".")
+
+
 async def test_telegram_followup_does_not_borrow_memory_from_other_chat(
     client: AsyncClient,
     db_session: AsyncSession,
@@ -2373,7 +2580,7 @@ async def test_telegram_followup_does_not_borrow_memory_from_other_chat(
         )
     ).scalars().all()
     assert any(
-        event.details.get("rag_query") == "Will that change the price?"
+        str(event.details.get("rag_query", "")).startswith("Will that change the price?")
         for event in events
     )
     assert all(
