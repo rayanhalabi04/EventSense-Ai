@@ -127,6 +127,7 @@ export interface ConversationDetail {
   latest_risk_detected_at?: string | null
   audit_timeline: ConversationAuditEvent[]
   suggested_reply?: SuggestedReply | null
+  calendar_availability?: CalendarAvailabilityResponse | null
   /** Why the Telegram auto-reply was skipped for the current pending draft (debug aid). */
   auto_reply_skip_reason?: string | null
   rag_sources: RagSource[]
@@ -151,6 +152,7 @@ export interface SuggestedReply {
   answer_supported: boolean
   refusal_reason?: string | null
   generation_method: string
+  small_talk_category?: 'greeting' | 'thanks' | 'acknowledgement' | 'closing' | null
   /** Set when the reply was delivered to the client automatically (e.g. Telegram). */
   auto_sent_at?: string | null
   sent_channel?: string | null
@@ -281,6 +283,79 @@ export interface Escalation {
 
 export interface UpdateEscalationRequest {
   status?: EscalationStatus
+}
+
+// ── Calendar ─────────────────────────────────────────────────────────────────
+
+export interface CalendarStatus {
+  connected: boolean
+  provider?: 'google' | null
+  provider_account_email?: string | null
+  calendar_id?: string | null
+  connection_type?: 'tenant_shared' | null
+}
+
+export interface CalendarConnectResponse {
+  authorization_url: string
+}
+
+export type CalendarEventSyncStatus = 'created' | 'failed' | 'deleted'
+
+export interface CalendarEvent {
+  id: string
+  tenant_id: string
+  created_by_user_id?: string | null
+  calendar_connection_id?: string | null
+  provider: 'google'
+  provider_event_id?: string | null
+  provider_event_link?: string | null
+  calendar_id: string
+  title: string
+  description?: string | null
+  start_time: string
+  end_time: string
+  timezone: string
+  related_conversation_id?: string | null
+  related_message_id?: string | null
+  related_task_id?: string | null
+  related_escalation_id?: string | null
+  sync_status: CalendarEventSyncStatus
+  error_message?: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface CalendarAvailabilitySlot {
+  start_time: string
+  end_time: string
+}
+
+export interface CalendarAvailabilityCheckRequest {
+  start_time: string
+  end_time: string
+  timezone?: string
+}
+
+export interface CalendarAvailabilityResponse {
+  available: boolean | null
+  reason: string
+  conflicting_events_count: number
+  alternatives: CalendarAvailabilitySlot[]
+  requested_start_time?: string | null
+  requested_end_time?: string | null
+  timezone: string
+}
+
+export interface CreateCalendarEventRequest {
+  title: string
+  description?: string | null
+  start_time: string
+  end_time: string
+  timezone: string
+  related_conversation_id?: string | null
+  related_message_id?: string | null
+  related_task_id?: string | null
+  related_escalation_id?: string | null
 }
 
 // ── Documents ─────────────────────────────────────────────────────────────────

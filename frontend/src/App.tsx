@@ -15,6 +15,7 @@ import { EscalationsPage } from './pages/EscalationsPage'
 import { DocumentsPage } from './pages/DocumentsPage'
 import { AuditLogsPage } from './pages/AuditLogsPage'
 import { EvaluationPage } from './pages/EvaluationPage'
+import { SettingsPage } from './pages/SettingsPage'
 
 function AppBootstrap() {
   const { token, user, setUser, logout } = useAuthStore()
@@ -58,6 +59,14 @@ export default function App() {
             <Route path="/tasks" element={<TasksPage />} />
             <Route path="/escalations" element={<EscalationsPage />} />
             <Route path="/documents" element={<DocumentsPage />} />
+            <Route
+              path="/settings"
+              element={
+                <ProtectedRoute requiredRole="manager">
+                  <SettingsPage />
+                </ProtectedRoute>
+              }
+            />
             <Route
               path="/audit-logs"
               element={

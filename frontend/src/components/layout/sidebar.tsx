@@ -8,6 +8,7 @@ import {
   AlertTriangle,
   ClipboardList,
   LogOut,
+  Settings,
 } from 'lucide-react'
 import { useAuthStore } from '../../store/authStore'
 import { useLogout } from '../../hooks/useAuth'
@@ -19,6 +20,7 @@ const navItems = [
   { to: '/tasks', icon: CheckSquare, label: 'Tasks' },
   { to: '/escalations', icon: AlertTriangle, label: 'Escalations' },
   { to: '/documents', icon: FileText, label: 'Documents' },
+  { to: '/settings', icon: Settings, label: 'Settings', managerOnly: true },
   { to: '/audit-logs', icon: ClipboardList, label: 'Audit Logs', managerOnly: true },
 ]
 
