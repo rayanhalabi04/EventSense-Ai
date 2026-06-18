@@ -8,6 +8,7 @@ from app.api.v1 import (
     agent,
     audit_logs,
     auth,
+    calendar,
     conversations,
     documents,
     escalations,
@@ -63,4 +64,15 @@ app.include_router(simulator.router, prefix="/api/v1/simulator", tags=["simulato
 app.include_router(telegram.router, prefix="/api/v1", tags=["telegram"])
 app.include_router(inbox.router, prefix="/api/v1/inbox", tags=["inbox"])
 app.include_router(audit_logs.router, prefix="/api/v1/audit-logs", tags=["audit-logs"])
+app.include_router(
+    calendar.integrations_router,
+    prefix="/api/v1/integrations/calendar",
+    tags=["calendar-integrations"],
+)
+app.include_router(calendar.events_router, prefix="/api/v1/calendar/events", tags=["calendar"])
+app.include_router(
+    calendar.availability_router,
+    prefix="/api/v1/calendar/availability",
+    tags=["calendar"],
+)
 app.include_router(health.router, tags=["health"])

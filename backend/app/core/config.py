@@ -39,6 +39,15 @@ class Settings(BaseSettings):
     telegram_bot_token: str = ""
     telegram_webhook_secret: str = ""
     telegram_auto_reply_enabled: bool = False
+    google_calendar_enabled: bool = False
+    google_client_id: str = ""
+    google_client_secret: str = ""
+    google_redirect_uri: str = (
+        "http://localhost:8088/api/v1/integrations/calendar/google/callback"
+    )
+    google_calendar_scopes: str = "https://www.googleapis.com/auth/calendar.events"
+    calendar_token_encryption_key: str = ""
+    frontend_url: str = "http://localhost:5173"
     # --- RAG embeddings ---------------------------------------------------
     # Which embedding backend powers tenant-scoped RAG retrieval.
     #   "fallback" (default) -> deterministic, NON-SEMANTIC keyword/hash vectors

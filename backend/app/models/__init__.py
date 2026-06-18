@@ -1,4 +1,11 @@
 from app.models.audit_log import AuditLog
+from app.models.calendar import (
+    CalendarConnection,
+    CalendarConnectionType,
+    CalendarEvent,
+    CalendarEventSyncStatus,
+    CalendarProvider,
+)
 from app.models.conversation import Conversation
 from app.models.document import Document, DocumentChunk, DocumentStatus, DocumentType
 from app.models.escalation import Escalation, EscalationStatus
@@ -10,6 +17,11 @@ from app.models.user import User
 
 __all__ = [
     "AuditLog",
+    "CalendarConnection",
+    "CalendarConnectionType",
+    "CalendarEvent",
+    "CalendarEventSyncStatus",
+    "CalendarProvider",
     "Conversation",
     "Document",
     "DocumentChunk",

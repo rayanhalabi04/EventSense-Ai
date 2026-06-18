@@ -19,3 +19,7 @@ joblib>=1.4,<2.0
 scikit-learn>=1.6,<1.7
 redis>=5.0,<6.0
 google-generativeai
+google-api-python-client>=2.140,<3.0
+google-auth>=2.33,<3.0
+google-auth-oauthlib>=1.2,<2.0
+cryptography>=42.0,<45.0
