@@ -10,6 +10,7 @@ from app.services.audit_log_service import (
     AUDIT_EVENT_CONVERSATION_DETAIL_VIEWED,
     AUDIT_EVENT_CONVERSATION_STATUS_CHANGED,
 )
+from app.services.intent_classifier_service import IntentClassification
 
 
 pytestmark = pytest.mark.asyncio
@@ -41,6 +42,13 @@ async def create_simulator_message(client: AsyncClient, token: str, body: str) -
     )
     assert response.status_code == 201
     return response.json()
+
+
+def force_intent(monkeypatch: pytest.MonkeyPatch, label: str, confidence: float = 0.95) -> None:
+    monkeypatch.setattr(
+        "app.services.simulator_service.IntentClassifierService.classify",
+        lambda body: IntentClassification(label=label, confidence=confidence),
+    )
 
 
 async def get_detail(client: AsyncClient, token: str, conversation_id: str):
@@ -159,6 +167,55 @@ async def test_detail_response_includes_future_placeholders(client: AsyncClient)
     assert data["rag_sources"] == []
     assert data["tasks"] == []
     assert data["escalations"] == []
+
+
+async def test_event_availability_detail_displays_event_request_not_preferred_time(
+    client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    force_intent(monkeypatch, "availability_question")
+    token = await login(client)
+    simulated = await create_simulator_message(
+        client,
+        token,
+        "Hello, are you available for a wedding on August 24?",
+    )
+
+    response = await get_detail(client, token, simulated["conversation_id"])
+
+    assert response.status_code == 200
+    availability = response.json()["calendar_availability"]
+    assert availability is not None
+    assert availability["requested_start_time"] is None
+    assert availability["requested_label"] == "Wedding on August 24"
+    assert availability["requested_label"] != "Needs preferred time"
+    assert availability["reason"] == "needs_event_details_staff_review"
+    assert availability["reason_label"] == "Needs event details / staff review"
+    assert availability["available"] is None
+
+
+async def test_meeting_availability_without_time_can_display_needs_preferred_time(
+    client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    force_intent(monkeypatch, "availability_question")
+    token = await login(client)
+    simulated = await create_simulator_message(
+        client,
+        token,
+        "Can we schedule a meeting tomorrow?",
+    )
+
+    response = await get_detail(client, token, simulated["conversation_id"])
+
+    assert response.status_code == 200
+    availability = response.json()["calendar_availability"]
+    assert availability is not None
+    assert availability["requested_start_time"] is None
+    assert availability["requested_label"] == "Needs preferred time"
+    assert availability["reason"] == "needs_staff_review"
+    assert availability["reason_label"] == "Needs staff review"
+    assert availability["available"] is None
 
 
 async def test_detail_view_creates_audit_log_event(

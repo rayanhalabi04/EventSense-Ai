@@ -32,6 +32,7 @@ from app.services.audit_log_service import (
     AuditLogService,
 )
 from app.services.calendar_availability_parser import (
+    describe_inexact_availability_request,
     is_availability_question,
     parse_availability_request,
 )
@@ -315,11 +316,14 @@ class ConversationService:
             reference_time=latest_inbound_message.sent_at,
         )
         if not parsed.has_exact_time:
+            display = describe_inexact_availability_request(latest_inbound_message.body)
             return CalendarAvailabilityResponse(
                 available=None,
-                reason=parsed.reason or "needs_staff_review",
+                reason=display.reason or parsed.reason or "needs_staff_review",
                 requested_start_time=None,
                 requested_end_time=None,
+                requested_label=display.requested_label,
+                reason_label=display.reason_label,
                 timezone=parsed.timezone,
             )
         assert parsed.start_time is not None
