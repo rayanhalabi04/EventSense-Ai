@@ -1,12 +1,12 @@
 import { Link } from 'react-router-dom'
 import { AnimatePresence, m } from 'framer-motion'
 import {
-  ArrowLeft, Send, Sparkles, CheckCircle, XCircle, Clock, CheckCheck,
+  ArrowLeft, Send, Sparkles, CheckCircle, XCircle, Clock, CheckCheck, CalendarDays,
 } from 'lucide-react'
 import { RiskBadge, TaskStatusBadge, EscalationStatusBadge } from '../components/ui/Badge'
 import { formatDateTime, formatRelative } from '../utils/date'
 import { autoReplySkipLabel, isAutoReplyMessage } from '../utils/suggestedReply'
-import type { ConversationDetail, Message, SuggestedReply } from '../types'
+import type { CalendarAvailabilityResponse, ConversationDetail, Message, SuggestedReply } from '../types'
 
 export type ConversationTab = 'tasks' | 'escalations' | 'audit'
 export type AsyncStatus = 'idle' | 'pending'
@@ -16,9 +16,10 @@ interface ConversationHeaderProps {
   conv: ConversationDetail
   source: string
   messageCount: number
+  onCreateCalendarEvent?: () => void
 }
 
-export function ConversationHeader({ conv, source, messageCount }: ConversationHeaderProps) {
+export function ConversationHeader({ conv, source, messageCount, onCreateCalendarEvent }: ConversationHeaderProps) {
   return (
     <div className="flex items-center gap-3 mb-4 flex-shrink-0">
       <Link to="/inbox" className="p-2 hover:bg-surface-warm rounded-lg transition-colors">
@@ -31,6 +32,12 @@ export function ConversationHeader({ conv, source, messageCount }: ConversationH
         </div>
         <p className="text-xs text-text-muted">{source} &middot; {messageCount} messages &middot; {conv.conversation_status}</p>
       </div>
+      {onCreateCalendarEvent && (
+        <button type="button" onClick={onCreateCalendarEvent} className="btn-secondary flex-shrink-0">
+          <CalendarDays className="h-4 w-4" />
+          Create Calendar Event
+        </button>
+      )}
     </div>
   )
 }
@@ -179,6 +186,64 @@ function SuggestedReplyCard({
   )
 }
 
+function CalendarAvailabilityCard({ availability }: { availability?: CalendarAvailabilityResponse | null }) {
+  if (!availability) return null
+
+  const status =
+    availability.available === true
+      ? { label: 'Available', className: 'text-success', Icon: CheckCircle }
+      : availability.available === false
+        ? { label: 'Busy', className: 'text-danger', Icon: XCircle }
+        : { label: 'Unknown', className: 'text-text-muted', Icon: Clock }
+  const StatusIcon = status.Icon
+
+  return (
+    <div className="border-t border-border px-4 py-3 bg-surface">
+      <div className="flex items-center gap-2 mb-2">
+        <CalendarDays className="w-3.5 h-3.5 text-accent" />
+        <span className="text-xs font-semibold text-text-primary">Calendar availability</span>
+      </div>
+      <div className="space-y-1.5 text-xs">
+        <div className="flex items-center justify-between gap-3">
+          <span className="text-text-muted">Requested</span>
+          <span className="text-text-primary text-right">
+            {availability.requested_start_time
+              ? formatDateTime(availability.requested_start_time)
+              : 'Needs preferred time'}
+          </span>
+        </div>
+        <div className="flex items-center justify-between gap-3">
+          <span className="text-text-muted">Status</span>
+          <span className={`inline-flex items-center gap-1 font-medium ${status.className}`}>
+            <StatusIcon className="w-3.5 h-3.5" />
+            {status.label}
+          </span>
+        </div>
+        {availability.reason && availability.available !== true && (
+          <div className="flex items-center justify-between gap-3">
+            <span className="text-text-muted">Reason</span>
+            <span className="text-text-primary text-right capitalize">
+              {availability.reason.replace(/_/g, ' ')}
+            </span>
+          </div>
+        )}
+        {availability.alternatives?.length ? (
+          <div className="pt-1">
+            <p className="text-text-muted mb-1">Alternatives</p>
+            <div className="space-y-1">
+              {availability.alternatives.map((slot) => (
+                <p key={`${slot.start_time}-${slot.end_time}`} className="text-text-primary">
+                  {formatDateTime(slot.start_time)}
+                </p>
+              ))}
+            </div>
+          </div>
+        ) : null}
+      </div>
+    </div>
+  )
+}
+
 interface MessageComposerProps {
   message: string
   sendStatus: AsyncStatus
@@ -275,6 +340,7 @@ export function ConversationMainPanel({
   return (
     <div className="flex-1 flex flex-col card overflow-hidden">
       <MessageThread messages={messages} messagesEndRef={messagesEndRef} />
+      <CalendarAvailabilityCard availability={conv.calendar_availability} />
       <SuggestedReplyCard
         conv={conv}
         pendingReply={pendingReply}

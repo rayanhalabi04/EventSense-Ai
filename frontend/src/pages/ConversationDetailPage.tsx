@@ -11,6 +11,7 @@ import { PageLoader } from '../components/ui/LoadingSpinner'
 import { ErrorState } from '../components/ui/ErrorState'
 import { getSuggestedReplyCardState } from '../utils/suggestedReply'
 import { apiErrorDetail } from '../utils/apiError'
+import { CalendarEventModal, type CalendarEventDraft } from '../components/CalendarEventModal'
 import {
   ConversationHeader,
   ConversationMainPanel,
@@ -30,6 +31,7 @@ export function ConversationDetailPage() {
   const [message, setMessage] = useState('')
   const [activeTab, setActiveTab] = useState<ConversationTab>('tasks')
   const [replyError, setReplyError] = useState<string | null>(null)
+  const [calendarDraft, setCalendarDraft] = useState<CalendarEventDraft | null>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
 
   const detail = useConversationDetail(conversationId ?? '')
@@ -102,9 +104,34 @@ export function ConversationDetailPage() {
     dismissReply.mutate(pending.id)
   }
 
+  const openCalendarModal = () => {
+    const latestInbound = conv.latest_inbound_message ?? [...messages].reverse().find((msg) => msg.direction === 'inbound') ?? null
+    const start = nextDefaultStart()
+    const end = new Date(start.getTime() + 45 * 60_000)
+    const title = conv.client_name
+      ? `Client meeting - ${conv.client_name}`
+      : `Follow-up - ${conv.conversation_id.slice(0, 8)}`
+    const preview = latestInbound?.body ? latestInbound.body.slice(0, 400) : 'No original message preview available.'
+    setCalendarDraft({
+      title,
+      description: `Created from EventSense conversation ${conv.conversation_id}\n\nOriginal message preview:\n${preview}`,
+      date: dateInputValue(start),
+      startTime: timeInputValue(start),
+      endTime: timeInputValue(end),
+      timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
+      related_conversation_id: conv.conversation_id,
+      related_message_id: latestInbound?.id ?? null,
+    })
+  }
+
   return (
     <div className="h-[calc(100vh-4rem)] flex flex-col">
-      <ConversationHeader conv={conv} source={source} messageCount={messages.length} />
+      <ConversationHeader
+        conv={conv}
+        source={source}
+        messageCount={messages.length}
+        onCreateCalendarEvent={openCalendarModal}
+      />
       <div className="flex gap-5 flex-1 min-h-0">
         <ConversationMainPanel
           conv={conv}
@@ -132,6 +159,28 @@ export function ConversationDetailPage() {
           onTabChange={setActiveTab}
         />
       </div>
+      {calendarDraft && (
+        <CalendarEventModal
+          open={Boolean(calendarDraft)}
+          draft={calendarDraft}
+          onClose={() => setCalendarDraft(null)}
+        />
+      )}
     </div>
   )
+}
+
+function nextDefaultStart(): Date {
+  const start = new Date()
+  start.setDate(start.getDate() + 1)
+  start.setHours(9, 0, 0, 0)
+  return start
+}
+
+function dateInputValue(date: Date): string {
+  return date.toISOString().slice(0, 10)
+}
+
+function timeInputValue(date: Date): string {
+  return date.toTimeString().slice(0, 5)
 }

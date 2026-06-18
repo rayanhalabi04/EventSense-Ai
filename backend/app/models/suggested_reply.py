@@ -63,3 +63,14 @@ class SuggestedReply(TimestampMixin, Base):
 
     conversation = relationship("Conversation")
     message = relationship("Message", foreign_keys=[message_id])
+
+    @property
+    def small_talk_category(self) -> str | None:
+        prefix = "small_talk_"
+        suffix = "_v1"
+        if not self.generation_method.startswith(prefix) or not self.generation_method.endswith(
+            suffix
+        ):
+            return None
+        category = self.generation_method[len(prefix) : -len(suffix)]
+        return category or None

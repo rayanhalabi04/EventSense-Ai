@@ -22,8 +22,14 @@ from app.models.conversation import Conversation
 from app.models.message import Message
 from app.models.suggested_reply import SuggestedReply, SuggestedReplyStatus
 from app.core.tenant_context import TenantContext
+from app.repositories.message_repository import MessageRepository
 from app.repositories.suggested_reply_repository import SuggestedReplyRepository
 from app.repositories.tenant_repository import TenantRepository
+from app.services.calendar_availability_parser import (
+    is_availability_question,
+    parse_availability_request,
+)
+from app.services.calendar_service import CalendarService
 from app.services.audit_log_service import (
     AUDIT_EVENT_SUGGESTED_REPLY_APPROVED,
     AUDIT_EVENT_SUGGESTED_REPLY_EDITED,
@@ -42,7 +48,12 @@ from app.services.guardrail_service import (
     check_retrieval_guardrails,
     redact_pii,
 )
-from app.services.llm_service import LLMClient, LLMReplyRequest, get_llm_client
+from app.services.llm_service import (
+    LLMClient,
+    LLMReplyRequest,
+    LLMSmallTalkRequest,
+    get_llm_client,
+)
 from app.schemas.suggested_reply import SuggestedReplyUpdate
 from app.services.conversation_memory_service import (
     ConversationMemoryMessage,
@@ -53,6 +64,11 @@ from app.services.rag_service import RagResult, retrieve
 
 GENERATION_METHOD_TEMPLATE = "template_v1"
 GENERATION_METHOD_LLM = "llm_v1"
+GENERATION_METHOD_CALENDAR_AVAILABILITY = "calendar_availability_v1"
+GENERATION_METHOD_SMALL_TALK_PREFIX = "small_talk_"
+GENERATION_METHOD_SMALL_TALK_SUFFIX = "_v1"
+SMALL_TALK_LLM_CATEGORY = "llm_safe_casual"
+SMALL_TALK_LLM_GENERIC_REPLY = "Thank you. Let us know if you need anything else."
 
 REFUSAL_TEXT = (
     "Hi, thank you for your message. I could not find enough information in our "
@@ -110,6 +126,17 @@ CONTACT_FOLLOWUP_REPLY = (
 CONTACT_FOLLOWUP_REFUSAL_REASON = "Contact requests require staff follow-up."
 GUEST_COUNT_REVIEW_REFUSAL_REASON = "Guest count/capacity changes require staff review."
 HIGH_RISK_REVIEW_REFUSAL_REASON = "High-risk complaint or human escalation requires staff review."
+AVAILABILITY_PARSE_REFUSAL_REASON = "Availability request needs a specific date and time."
+AVAILABILITY_MANUAL_REVIEW_REASON = "Calendar availability requires staff review."
+SMALL_TALK_CONTEXTUAL_MEETING_REPLY = (
+    "You're welcome. We look forward to speaking with you then."
+)
+SMALL_TALK_REPLIES = {
+    "greeting": "Hi, how can we help you today?",
+    "thanks": "You're very welcome. Let us know if you need anything else.",
+    "acknowledgement": "Great, thank you.",
+    "closing": "Thank you. Have a great day.",
+}
 
 _ESCALATION_KEYWORDS = (
     "cancel",
@@ -197,6 +224,120 @@ _OLD_GENERIC_FOLLOWUP_SENTENCES = (
     "A team member will follow up with you shortly.",
 )
 
+_SMALL_TALK_PHRASES = {
+    "closing": {
+        "bye",
+        "goodbye",
+        "ok bye",
+        "okay bye",
+        "see you",
+        "talk later",
+    },
+    "thanks": {
+        "thank you",
+        "thanks",
+        "thx",
+        "merci",
+    },
+    "greeting": {
+        "hello",
+        "hey",
+        "good morning",
+        "good evening",
+    },
+    "acknowledgement": {
+        "ok",
+        "okay",
+        "noted",
+        "sure",
+        "great",
+        "perfect",
+    },
+}
+_SMALL_TALK_ORDER = ("closing", "thanks", "greeting", "acknowledgement")
+_MEETING_CONFIRMATION_TERMS = (
+    "meeting",
+    "call",
+    "appointment",
+    "speaking with you",
+    "speak with you",
+)
+_CONFIRMED_MEETING_TERMS = (
+    "confirmed",
+    "confirm",
+    "scheduled",
+    "works for us",
+    "see you",
+    "speak with you then",
+    "speaking with you then",
+)
+_SMALL_TALK_LLM_BLOCK_PATTERNS = (
+    r"\bpricing\b",
+    r"\bprices?\b",
+    r"\bpackages?\b",
+    r"\bcosts?\b",
+    r"\bquotes?\b",
+    r"\bdeposit\b",
+    r"\brefunds?\b",
+    r"\bcancell?ation\b",
+    r"\bcancell?ed\b",
+    r"\bcancell?ing\b",
+    r"\bcancel\b",
+    r"\bpayments?\b",
+    r"\bpaid\b",
+    r"\binvoices?\b",
+    r"\breceipts?\b",
+    r"\bguest\s+counts?\b",
+    r"\bguests?\b",
+    r"\bcapacity\b",
+    r"\bcomplaints?\b",
+    r"\bangry\b",
+    r"\bunhappy\b",
+    r"\bbad\b",
+    r"\bcontracts?\b",
+    r"\bterms?\b",
+    r"\bpolic(?:y|ies)\b",
+    r"\bavailability\b",
+    r"\bavailable\b",
+    r"\bmeet\b",
+    r"\bmeeting\b",
+    r"\bschedule\b",
+    r"\bappointment\b",
+    r"\bdate\b",
+    r"\btime\b",
+    r"\bbookings?\b",
+    r"\breserv(?:e|ation|ed|ing)\b",
+    r"\bconfirm\s+booking\b",
+    r"\burgent\b",
+    r"\basap\b",
+    r"\bright\s+now\b",
+    r"\bimmediately\b",
+    r"\bemergency\b",
+    r"\btoday\b",
+    r"\btomorrow\b",
+    r"\btonight\b",
+    r"\blast[-\s]?minute\b",
+)
+_SMALL_TALK_LLM_ALLOW_PATTERNS = (
+    r"\bmerci+\b",
+    r"\bthanks?\b",
+    r"\bthank\s+you\b",
+    r"\bthx+\b",
+    r"\bsounds?\s+good\b",
+    r"\bgreat\b",
+    r"\bperfect\b",
+    r"\bok(?:ay)?\b",
+    r"\balright\b",
+    r"\bcool\b",
+    r"\bsee\s+you\b",
+    r"\btalk\s+soon\b",
+    r"\bappreciat(?:e|ed|ing)\b",
+    r"\bno\s+worries\b",
+    r"\ball\s+good\b",
+    r"\bhope\s+(?:you'?re|you\s+are)\s+well\b",
+    r"\bhow\s+are\s+you\b",
+)
+
 
 @dataclass(frozen=True)
 class GeneratedReply:
@@ -207,6 +348,7 @@ class GeneratedReply:
     rag_sources: list[dict[str, object]]
     generation_method: str
     fallback_reason: str | None = None
+    small_talk_category: str | None = None
 
 
 class SuggestedReplyService:
@@ -456,6 +598,164 @@ def _normalize_reply_spacing(text: str) -> str:
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
     cleaned = re.sub(r" {2,}", " ", cleaned)
     return cleaned.strip()
+
+
+def detect_small_talk_category(message_body: str) -> str | None:
+    """Return a courtesy category only for short standalone client messages."""
+    normalized = _normalize_small_talk_text(message_body)
+    if not normalized:
+        return None
+    for category in _SMALL_TALK_ORDER:
+        if normalized in _SMALL_TALK_PHRASES[category]:
+            return category
+    if re.fullmatch(r"hi+", normalized):
+        return "greeting"
+    return None
+
+
+def _normalize_small_talk_text(message_body: str) -> str:
+    lowered = message_body.lower().strip()
+    # Treat punctuation as separators so "ok, bye" matches "ok bye", while
+    # messages with business content still have extra words and do not match.
+    lowered = re.sub(r"[^a-z0-9]+", " ", lowered)
+    return re.sub(r"\s+", " ", lowered).strip()
+
+
+async def _build_small_talk_reply(
+    session: AsyncSession,
+    *,
+    tenant_id: UUID,
+    conversation_id: UUID,
+    category: str,
+) -> GeneratedReply:
+    text = SMALL_TALK_REPLIES[category]
+    if category in {"thanks", "acknowledgement"}:
+        latest_outbound = await MessageRepository(session).latest_outbound_for_conversation(
+            tenant_id,
+            conversation_id,
+        )
+        if latest_outbound is not None and _outbound_confirmed_meeting(latest_outbound.body):
+            text = SMALL_TALK_CONTEXTUAL_MEETING_REPLY
+
+    return GeneratedReply(
+        suggested_text=text,
+        answer_supported=True,
+        refusal_reason=None,
+        source_document_ids=[],
+        rag_sources=[],
+        generation_method=_small_talk_generation_method(category),
+        small_talk_category=category,
+    )
+
+
+def _is_safe_small_talk_llm_candidate(
+    message_body: str,
+    *,
+    intent_label: str | None,
+    risk_level: str | None,
+) -> bool:
+    if intent_label not in (None, "other"):
+        return False
+    if risk_level == "high":
+        return False
+
+    normalized = _normalize_small_talk_text(message_body)
+    if not normalized:
+        return False
+    words = re.findall(r"[a-z0-9]+", normalized)
+    if len(words) > 8 or len(message_body.strip()) > 80:
+        return False
+    if "?" in message_body and not re.search(r"\bhow\s+are\s+you\b", normalized):
+        return False
+    if not _contains_safe_small_talk_llm_marker(message_body):
+        return False
+    return not _contains_small_talk_llm_blocked_terms(message_body)
+
+
+def _contains_small_talk_llm_blocked_terms(text: str) -> bool:
+    return any(re.search(pattern, text, flags=re.IGNORECASE) for pattern in _SMALL_TALK_LLM_BLOCK_PATTERNS)
+
+
+def _contains_safe_small_talk_llm_marker(text: str) -> bool:
+    return any(re.search(pattern, text, flags=re.IGNORECASE) for pattern in _SMALL_TALK_LLM_ALLOW_PATTERNS)
+
+
+async def _build_safe_small_talk_llm_reply(
+    *,
+    message_body: str,
+    tenant_slug: str | None,
+    llm_client_factory: Callable[[], LLMClient | None] | None = None,
+) -> tuple[GeneratedReply, list[GuardrailResult]]:
+    text = SMALL_TALK_LLM_GENERIC_REPLY
+    fallback_reason: str | None = None
+    output_events: list[GuardrailResult] = []
+    llm_client = (llm_client_factory or get_llm_client)()
+
+    if llm_client is None:
+        fallback_reason = "llm_disabled_or_not_configured"
+    else:
+        try:
+            response = await llm_client.generate_safe_small_talk_reply(
+                LLMSmallTalkRequest(client_message=redact_pii(message_body))
+            )
+            llm_text = _clean_safe_small_talk_llm_output(response.text)
+            if llm_text is None:
+                fallback_reason = "small_talk_llm_invalid_response"
+            else:
+                output_result = check_output_guardrails(llm_text, [], tenant_slug)
+                if output_result.flags:
+                    output_events.append(output_result)
+                if output_result.allowed:
+                    text = output_result.sanitized_text or llm_text
+                else:
+                    fallback_reason = "small_talk_llm_output_rejected_by_guardrails"
+        except Exception as exc:
+            fallback_reason = f"small_talk_llm_error:{exc.__class__.__name__}"
+
+    return (
+        GeneratedReply(
+            suggested_text=text,
+            answer_supported=True,
+            refusal_reason=None,
+            source_document_ids=[],
+            rag_sources=[],
+            generation_method=_small_talk_generation_method(SMALL_TALK_LLM_CATEGORY),
+            fallback_reason=fallback_reason,
+            small_talk_category=SMALL_TALK_LLM_CATEGORY,
+        ),
+        output_events,
+    )
+
+
+def _clean_safe_small_talk_llm_output(text: str) -> str | None:
+    cleaned = re.sub(r"\s+", " ", text.strip().strip("\"'")).strip()
+    cleaned = re.sub(r"(?i)^reply\s*:\s*", "", cleaned).strip()
+    if not cleaned:
+        return None
+
+    match = re.match(r"(.+?[.!?])(?:\s|$)", cleaned)
+    if match:
+        cleaned = match.group(1).strip()
+    elif cleaned[-1] not in ".!?":
+        cleaned = f"{cleaned}."
+
+    if len(cleaned) > 180:
+        return None
+    if _contains_small_talk_llm_blocked_terms(cleaned):
+        return None
+    return cleaned
+
+
+def _small_talk_generation_method(category: str) -> str:
+    return f"{GENERATION_METHOD_SMALL_TALK_PREFIX}{category}{GENERATION_METHOD_SMALL_TALK_SUFFIX}"
+
+
+def _outbound_confirmed_meeting(text: str) -> bool:
+    normalized = text.lower()
+    return (
+        any(term in normalized for term in _MEETING_CONFIRMATION_TERMS)
+        and any(term in normalized for term in _CONFIRMED_MEETING_TERMS)
+    )
 
 
 def _needs_escalation(message_body: str, content: str, risk_level: str | None) -> bool:
@@ -749,6 +1049,133 @@ def _urgency_phrase(message_body: str) -> str | None:
     return None
 
 
+async def _generate_calendar_availability_reply(
+    session: AsyncSession,
+    *,
+    tenant_id: UUID,
+    user_id: UUID | None,
+    message: Message,
+    message_body: str,
+) -> GeneratedReply:
+    parsed = parse_availability_request(
+        message_body,
+        reference_time=message.sent_at,
+    )
+    if not parsed.has_exact_time:
+        return GeneratedReply(
+            suggested_text=(
+                "Hi, thank you for your message. Could you share your preferred "
+                "date and time for the meeting? We'll check availability and "
+                "follow up with you."
+            ),
+            answer_supported=False,
+            refusal_reason=AVAILABILITY_PARSE_REFUSAL_REASON,
+            source_document_ids=[],
+            rag_sources=[],
+            generation_method=GENERATION_METHOD_CALENDAR_AVAILABILITY,
+        )
+
+    assert parsed.start_time is not None
+    assert parsed.end_time is not None
+    try:
+        availability = await CalendarService(session).check_tenant_availability(
+            start_time=parsed.start_time,
+            end_time=parsed.end_time,
+            timezone_name=parsed.timezone,
+            tenant_id=tenant_id,
+            actor_user_id=user_id,
+            commit=False,
+        )
+    except Exception:
+        return GeneratedReply(
+            suggested_text=(
+                "Hi, thank you for your message. A staff member will check our "
+                "calendar availability manually and follow up with you."
+            ),
+            answer_supported=False,
+            refusal_reason=AVAILABILITY_MANUAL_REVIEW_REASON,
+            source_document_ids=[],
+            rag_sources=[],
+            generation_method=GENERATION_METHOD_CALENDAR_AVAILABILITY,
+        )
+
+    requested_time = _format_requested_slot(parsed.start_time, parsed.end_time)
+    if availability.reason == "calendar_not_connected":
+        return GeneratedReply(
+            suggested_text=(
+                f"Hi, thank you for your message. We'll check availability for "
+                f"{requested_time} manually and follow up with you."
+            ),
+            answer_supported=False,
+            refusal_reason=AVAILABILITY_MANUAL_REVIEW_REASON,
+            source_document_ids=[],
+            rag_sources=[],
+            generation_method=GENERATION_METHOD_CALENDAR_AVAILABILITY,
+        )
+
+    if availability.available is True:
+        meeting_purpose = _meeting_purpose_sentence(message_body)
+        text = (
+            f"Hi, thank you for your message. {requested_time} works for us. "
+            f"We can schedule the meeting then{meeting_purpose}"
+        )
+    else:
+        if availability.alternatives:
+            options = _format_alternative_slots(
+                _format_requested_slot(slot.start_time, slot.end_time)
+                for slot in availability.alternatives
+            )
+            text = (
+                f"Hi, thank you for your message. {requested_time} is not available, "
+                f"but we can offer {options} instead. Please let us know which "
+                "time works best for you."
+            )
+        else:
+            text = (
+                f"Hi, thank you for your message. {requested_time} is not available. "
+                "Could you share another preferred time that works for you?"
+            )
+
+    return GeneratedReply(
+        suggested_text=text,
+        answer_supported=True,
+        refusal_reason=None,
+        source_document_ids=[],
+        rag_sources=[],
+        generation_method=GENERATION_METHOD_CALENDAR_AVAILABILITY,
+    )
+
+
+def _format_requested_slot(start_time, end_time) -> str:
+    start_day = start_time.strftime("%A, %B ") + str(start_time.day)
+    return f"{start_day} at {_format_time(start_time)}"
+
+
+def _format_alternative_slots(slots) -> str:
+    slot_list = list(slots)
+    if len(slot_list) <= 1:
+        return slot_list[0] if slot_list else "another time"
+    return f"{', '.join(slot_list[:-1])} or {slot_list[-1]}"
+
+
+def _meeting_purpose_sentence(message_body: str) -> str:
+    match = re.search(r"\bto\s+([^?.!]+)", message_body, flags=re.IGNORECASE)
+    if not match:
+        return "."
+    purpose = re.sub(r"\s+", " ", match.group(1)).strip()
+    if not purpose:
+        return "."
+    return f" to {purpose}."
+
+
+def _format_time(value) -> str:
+    hour = value.hour % 12 or 12
+    suffix = "AM" if value.hour < 12 else "PM"
+    if value.minute:
+        return f"{hour}:{value.minute:02d} {suffix}"
+    return f"{hour} {suffix}"
+
+
 def build_contextual_rag_query(
     message_body: str,
     memory_messages: Sequence[ConversationMemoryMessage],
@@ -899,6 +1326,7 @@ def _with_fallback_reason(reply: GeneratedReply, reason: str) -> GeneratedReply:
         rag_sources=reply.rag_sources,
         generation_method=reply.generation_method,
         fallback_reason=reason,
+        small_talk_category=reply.small_talk_category,
     )
 
 
@@ -926,6 +1354,9 @@ async def generate_suggested_reply(
     if input_result.flags:
         guardrail_events.append(("input", input_result))
 
+    message_body = input_result.sanitized_text or message.body
+    small_talk_category = detect_small_talk_category(message_body)
+
     if not input_result.allowed:
         generated = GeneratedReply(
             suggested_text=SAFE_REFUSAL,
@@ -935,8 +1366,26 @@ async def generate_suggested_reply(
             rag_sources=[],
             generation_method=GENERATION_METHOD_TEMPLATE,
         )
+    elif small_talk_category is not None:
+        generated = await _build_small_talk_reply(
+            session,
+            tenant_id=tenant_id,
+            conversation_id=conversation.id,
+            category=small_talk_category,
+        )
+    elif _is_safe_small_talk_llm_candidate(
+        message_body,
+        intent_label=message.intent_label,
+        risk_level=message.risk_level,
+    ):
+        generated, output_events = await _build_safe_small_talk_llm_reply(
+            message_body=message_body,
+            tenant_slug=tenant_slug,
+            llm_client_factory=llm_client_factory,
+        )
+        guardrail_events.extend(("output", event) for event in output_events)
     elif _is_payment_verification_request(
-        input_result.sanitized_text or message.body,
+        message_body,
         message.intent_label,
     ):
         generated = GeneratedReply(
@@ -947,7 +1396,15 @@ async def generate_suggested_reply(
             rag_sources=[],
             generation_method=GENERATION_METHOD_TEMPLATE,
         )
-    elif _is_contact_followup_request(input_result.sanitized_text or message.body):
+    elif is_availability_question(message_body, message.intent_label):
+        generated = await _generate_calendar_availability_reply(
+            session,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            message=message,
+            message_body=message_body,
+        )
+    elif _is_contact_followup_request(message_body):
         generated = GeneratedReply(
             suggested_text=CONTACT_FOLLOWUP_REPLY,
             answer_supported=False,
@@ -961,7 +1418,6 @@ async def generate_suggested_reply(
             tenant_id=tenant_id,
             conversation_id=conversation.id,
         )
-        message_body = input_result.sanitized_text or message.body
         rag_query = build_contextual_rag_query(
             message_body,
             memory_messages,
@@ -1103,6 +1559,12 @@ async def generate_suggested_reply(
         "llm_fallback_reason": generated.fallback_reason,
         "memory_message_count": len(memory_messages),
         "rag_query": rag_query_audit,
+        "reply_strategy": (
+            "small_talk_llm"
+            if generated.small_talk_category == SMALL_TALK_LLM_CATEGORY
+            else None
+        ),
+        "small_talk_category": generated.small_talk_category,
         "source_document_ids": generated.source_document_ids,
         "source_document_titles": source_titles,
         "user_id": user_id,

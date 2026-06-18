@@ -59,6 +59,7 @@ class SuggestedReplyRead(BaseModel):
     answer_supported: bool
     refusal_reason: str | None
     generation_method: str
+    small_talk_category: str | None = None
     auto_sent_at: datetime | None = None
     sent_channel: str | None = None
     created_by_user_id: UUID | None

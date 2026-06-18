@@ -5,6 +5,7 @@ from pydantic import BaseModel, ConfigDict
 
 from app.models.conversation import ConversationStatus
 from app.models.message import MessageDirection, MessageStatus
+from app.schemas.calendar import CalendarAvailabilityResponse
 from app.schemas.escalation import EscalationRead
 from app.schemas.suggested_reply import SuggestedReplyRead
 from app.schemas.task import TaskRead
@@ -89,6 +90,7 @@ class ConversationDetailResponse(BaseModel):
     latest_risk_detected_at: datetime | None = None
     audit_timeline: list[ConversationDetailAuditEvent]
     suggested_reply: SuggestedReplyRead | None = None
+    calendar_availability: CalendarAvailabilityResponse | None = None
     # Debugging aid: when the latest suggested reply is a pending draft (not
     # auto-sent), this carries the reason the Telegram auto-reply was skipped
     # (e.g. "no_rag_source", "blocked_intent") so it is visible without digging

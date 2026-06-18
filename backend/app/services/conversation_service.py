@@ -22,6 +22,7 @@ from app.schemas.conversation import (
     ConversationUpdate,
 )
 from app.schemas.escalation import EscalationRead
+from app.schemas.calendar import CalendarAvailabilityResponse
 from app.schemas.suggested_reply import SuggestedReplyRead
 from app.schemas.task import TaskRead
 from app.services.audit_log_service import (
@@ -30,6 +31,11 @@ from app.services.audit_log_service import (
     AUDIT_EVENT_TELEGRAM_AUTO_REPLY_SKIPPED,
     AuditLogService,
 )
+from app.services.calendar_availability_parser import (
+    is_availability_question,
+    parse_availability_request,
+)
+from app.services.calendar_service import CalendarService
 from app.services.rag_service import retrieve
 from app.services.suggested_reply_service import generate_suggested_reply
 
@@ -130,10 +136,14 @@ class ConversationService:
             ctx.tenant_id,
             conversation.id,
         )
+        calendar_availability = await self._calendar_availability_for_latest_message(
+            latest_inbound_message,
+            ctx,
+        )
         rag_sources: list[dict[str, object]] = []
         if latest_reply is not None and latest_reply.rag_sources:
             rag_sources = list(latest_reply.rag_sources)
-        elif latest_inbound_message is not None:
+        elif latest_inbound_message is not None and calendar_availability is None:
             rag_result = await retrieve(
                 self.session,
                 query=latest_inbound_message.body,
@@ -192,6 +202,7 @@ class ConversationService:
             suggested_reply=(
                 SuggestedReplyRead.model_validate(latest_reply) if latest_reply is not None else None
             ),
+            calendar_availability=calendar_availability,
             auto_reply_skip_reason=auto_reply_skip_reason,
             rag_sources=rag_sources,
             tasks=[TaskRead.model_validate(task) for task in tasks],
@@ -286,6 +297,49 @@ class ConversationService:
             for audit_log in audit_logs
             if _audit_log_matches_conversation(audit_log, conversation_id_str, message_ids)
         ]
+
+    async def _calendar_availability_for_latest_message(
+        self,
+        latest_inbound_message: Message | None,
+        ctx: TenantContext,
+    ) -> CalendarAvailabilityResponse | None:
+        if latest_inbound_message is None:
+            return None
+        if not is_availability_question(
+            latest_inbound_message.body,
+            latest_inbound_message.intent_label,
+        ):
+            return None
+        parsed = parse_availability_request(
+            latest_inbound_message.body,
+            reference_time=latest_inbound_message.sent_at,
+        )
+        if not parsed.has_exact_time:
+            return CalendarAvailabilityResponse(
+                available=None,
+                reason=parsed.reason or "needs_staff_review",
+                requested_start_time=None,
+                requested_end_time=None,
+                timezone=parsed.timezone,
+            )
+        assert parsed.start_time is not None
+        assert parsed.end_time is not None
+        try:
+            return await CalendarService(self.session).check_tenant_availability(
+                start_time=parsed.start_time,
+                end_time=parsed.end_time,
+                timezone_name=parsed.timezone,
+                ctx=ctx,
+                commit=False,
+            )
+        except Exception:
+            return CalendarAvailabilityResponse(
+                available=None,
+                reason="availability_check_failed",
+                requested_start_time=parsed.start_time,
+                requested_end_time=parsed.end_time,
+                timezone=parsed.timezone,
+            )
 
 
 def _latest_auto_reply_skip_reason(

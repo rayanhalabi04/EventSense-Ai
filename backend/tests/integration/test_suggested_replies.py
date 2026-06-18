@@ -1,3 +1,4 @@
+from datetime import timedelta
 from uuid import UUID
 
 import pytest
@@ -7,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.audit_log import AuditLog
 from app.models.document import DocumentChunk
+from app.schemas.calendar import CalendarAvailabilityResponse, CalendarAvailabilitySlot
 from app.services.conversation_memory_service import ConversationMemoryMessage
 from app.services.llm_service import FakeLLMClient
 from app.services.audit_log_service import (
@@ -198,6 +200,323 @@ async def test_e2e_unsupported_reply_refuses_without_sources_and_audits_refusal(
     assert event.details["answer_supported"] is False
     assert event.details["source_document_ids"] == []
     assert event.details["refusal_reason"] is not None
+
+
+@pytest.mark.parametrize(
+    ("body", "expected_text", "expected_category"),
+    [
+        ("thank you", "You're very welcome. Let us know if you need anything else.", "thanks"),
+        ("merci", "You're very welcome. Let us know if you need anything else.", "thanks"),
+        ("hii", "Hi, how can we help you today?", "greeting"),
+        ("ok bye", "Thank you. Have a great day.", "closing"),
+    ],
+)
+async def test_small_talk_suggested_reply_skips_rag(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+    body: str,
+    expected_text: str,
+    expected_category: str,
+):
+    async def fail_if_rag_called(*args, **kwargs):
+        raise AssertionError("RAG should not be called for small-talk messages")
+
+    monkeypatch.setattr("app.services.suggested_reply_service.retrieve", fail_if_rag_called)
+    token = await login(client)
+    simulated = await create_simulator_message(client, token, body=body)
+
+    reply = await generate_reply(client, token, simulated["conversation_id"])
+
+    assert reply["suggested_text"] == expected_text
+    assert reply["answer_supported"] is True
+    assert reply["refusal_reason"] is None
+    assert reply["source_document_ids"] == []
+    assert reply["rag_sources"] == []
+    assert reply["small_talk_category"] == expected_category
+    assert reply["generation_method"] == f"small_talk_{expected_category}_v1"
+    assert "could not find enough information" not in reply["suggested_text"].lower()
+    assert "uploaded company documents" not in reply["suggested_text"].lower()
+
+    event = await latest_generated_event(db_session, reply["id"])
+    assert event.details["small_talk_category"] == expected_category
+    assert event.details["rag_query"] is None
+
+
+@pytest.mark.parametrize(
+    ("body", "llm_text"),
+    [
+        ("merciii", "You're very welcome, let us know if you need anything else."),
+        ("great see you then", "Great, see you then."),
+    ],
+)
+async def test_safe_small_talk_llm_fallback_skips_rag(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+    body: str,
+    llm_text: str,
+):
+    async def fail_if_rag_called(*args, **kwargs):
+        raise AssertionError("RAG should not be called for safe casual messages")
+
+    fake = FakeLLMClient(llm_text)
+    monkeypatch.setattr("app.services.suggested_reply_service.retrieve", fail_if_rag_called)
+    monkeypatch.setattr("app.services.suggested_reply_service.get_llm_client", lambda: fake)
+    token = await login(client)
+    simulated = await create_simulator_message(client, token, body=body)
+
+    reply = await generate_reply(client, token, simulated["conversation_id"])
+
+    assert reply["suggested_text"] == llm_text
+    assert reply["answer_supported"] is True
+    assert reply["refusal_reason"] is None
+    assert reply["source_document_ids"] == []
+    assert reply["rag_sources"] == []
+    assert reply["generation_method"] == "small_talk_llm_safe_casual_v1"
+    assert reply["small_talk_category"] == "llm_safe_casual"
+    assert len(fake.small_talk_requests) == 1
+    assert fake.requests == []
+    assert "could not find enough information" not in reply["suggested_text"].lower()
+    assert "uploaded company documents" not in reply["suggested_text"].lower()
+
+    event = await latest_generated_event(db_session, reply["id"])
+    assert event.details["reply_strategy"] == "small_talk_llm"
+    assert event.details["small_talk_category"] == "llm_safe_casual"
+    assert event.details["rag_query"] is None
+
+
+async def test_safe_small_talk_llm_disabled_uses_generic_reply_without_rag(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    async def fail_if_rag_called(*args, **kwargs):
+        raise AssertionError("RAG should not be called for safe casual messages")
+
+    monkeypatch.setattr("app.services.suggested_reply_service.retrieve", fail_if_rag_called)
+    monkeypatch.setattr("app.services.suggested_reply_service.get_llm_client", lambda: None)
+    token = await login(client)
+    simulated = await create_simulator_message(client, token, body="merciii")
+
+    reply = await generate_reply(client, token, simulated["conversation_id"])
+
+    assert reply["suggested_text"] == "Thank you. Let us know if you need anything else."
+    assert reply["answer_supported"] is True
+    assert reply["generation_method"] == "small_talk_llm_safe_casual_v1"
+    assert reply["small_talk_category"] == "llm_safe_casual"
+    assert reply["rag_sources"] == []
+
+    event = await latest_generated_event(db_session, reply["id"])
+    assert event.details["reply_strategy"] == "small_talk_llm"
+    assert event.details["llm_fallback_reason"] == "llm_disabled_or_not_configured"
+
+
+async def test_greeting_with_pricing_request_uses_normal_pricing_flow(
+    client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr("app.services.suggested_reply_service.get_llm_client", lambda: None)
+    token = await login(client)
+    document = await create_document(
+        client,
+        token,
+        title="Elegant Pricing Packages",
+        document_type="pricing",
+        content_text=(
+            "Clients can ask us to send prices for wedding packages. "
+            "ELEGANT WEDDINGS - PRICING PACKAGES "
+            "1. CLASSIC PACKAGE - $3,500 Includes: venue setup. "
+            "Guest count limit: Up to 80 guests."
+        ),
+    )
+    simulated = await create_simulator_message(
+        client,
+        token,
+        body="hi, can you send prices?",
+    )
+
+    reply = await generate_reply(client, token, simulated["conversation_id"])
+
+    text = reply["suggested_text"].lower()
+    assert reply["answer_supported"] is True
+    assert reply["small_talk_category"] is None
+    assert reply["generation_method"] != "small_talk_llm_safe_casual_v1"
+    assert reply["source_document_ids"] == [document["id"]]
+    assert "classic package" in text
+    assert "$3,500" in reply["suggested_text"]
+    assert reply["suggested_text"] != "Hi, how can we help you today?"
+
+
+async def test_thanks_with_cancellation_request_uses_cancellation_flow(
+    client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr("app.services.suggested_reply_service.get_llm_client", lambda: None)
+    token = await login(client)
+    document = await create_document(
+        client,
+        token,
+        title="Elegant Cancellation Policy",
+        document_type="cancellation_policy",
+        content_text=(
+            "Clients who want to cancel should follow the cancellation policy. "
+            "Cancellations made more than 30 days before the event may receive a partial "
+            "refund, subject to manager review. Within 30 days the booking is non-refundable."
+        ),
+    )
+    simulated = await create_simulator_message(
+        client,
+        token,
+        body="thanks, but I want to cancel",
+    )
+
+    reply = await generate_reply(client, token, simulated["conversation_id"])
+
+    text = reply["suggested_text"].lower()
+    assert reply["answer_supported"] is True
+    assert reply["small_talk_category"] is None
+    assert reply["generation_method"] != "small_talk_llm_safe_casual_v1"
+    assert reply["source_document_ids"] == [document["id"]]
+    assert "cancel" in text or "cancellation" in text
+    assert "manager" in text
+    assert "you're very welcome" not in text
+    assert "could not find enough information" not in text
+
+
+async def test_short_availability_question_does_not_use_small_talk_llm(
+    client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    fake = FakeLLMClient("Casual reply that should not be used.")
+    monkeypatch.setattr("app.services.suggested_reply_service.get_llm_client", lambda: fake)
+    token = await login(client)
+    simulated = await create_simulator_message(
+        client,
+        token,
+        body="are you available tomorrow",
+    )
+
+    reply = await generate_reply(client, token, simulated["conversation_id"])
+
+    assert reply["generation_method"] == "calendar_availability_v1"
+    assert reply["small_talk_category"] is None
+    assert "casual reply" not in reply["suggested_text"].lower()
+    assert fake.small_talk_requests == []
+
+
+async def test_availability_question_suggested_reply_uses_calendar_instead_of_rag(
+    client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    token = await login(client)
+
+    async def fake_check_availability(self, **kwargs):
+        return CalendarAvailabilityResponse(
+            available=True,
+            reason="free",
+            conflicting_events_count=0,
+            alternatives=[],
+            requested_start_time=kwargs["start_time"],
+            requested_end_time=kwargs["end_time"],
+            timezone=kwargs["timezone_name"],
+        )
+
+    monkeypatch.setattr(
+        "app.services.suggested_reply_service.CalendarService.check_tenant_availability",
+        fake_check_availability,
+    )
+    simulated = await create_simulator_message(
+        client,
+        token,
+        body="Hi, can we meet tomorrow at 3:20 PM to finalize the decoration setup?",
+    )
+
+    reply = await generate_reply(client, token, simulated["conversation_id"])
+
+    text = reply["suggested_text"].lower()
+    assert reply["generation_method"] == "calendar_availability_v1"
+    assert reply["answer_supported"] is True
+    assert "works for us" in text
+    assert "schedule the meeting then to finalize the decoration setup" in text
+    assert "appears available" not in text
+    assert "staff member will confirm" not in text
+    assert "pending staff confirmation" not in text
+    assert "uploaded company documents" not in text
+    assert reply["rag_sources"] == []
+
+
+async def test_busy_availability_question_suggested_reply_offers_alternatives(
+    client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    token = await login(client)
+
+    async def fake_check_availability(self, **kwargs):
+        first_start = kwargs["start_time"].replace(hour=16, minute=30)
+        second_start = kwargs["start_time"].replace(hour=17, minute=0)
+        return CalendarAvailabilityResponse(
+            available=False,
+            reason="busy",
+            conflicting_events_count=1,
+            alternatives=[
+                CalendarAvailabilitySlot(
+                    start_time=first_start,
+                    end_time=first_start + timedelta(minutes=45),
+                ),
+                CalendarAvailabilitySlot(
+                    start_time=second_start,
+                    end_time=second_start + timedelta(minutes=45),
+                ),
+            ],
+            requested_start_time=kwargs["start_time"],
+            requested_end_time=kwargs["end_time"],
+            timezone=kwargs["timezone_name"],
+        )
+
+    monkeypatch.setattr(
+        "app.services.suggested_reply_service.CalendarService.check_tenant_availability",
+        fake_check_availability,
+    )
+    simulated = await create_simulator_message(
+        client,
+        token,
+        body="Hi, can we meet tomorrow at 3:20 PM to finalize the decoration setup?",
+    )
+
+    reply = await generate_reply(client, token, simulated["conversation_id"])
+
+    text = reply["suggested_text"].lower()
+    assert reply["generation_method"] == "calendar_availability_v1"
+    assert reply["answer_supported"] is True
+    assert "is not available" in text
+    assert "but we can offer" in text
+    assert "4:30 pm" in text
+    assert "or" in text
+    assert "5 pm" in text
+    assert "which time works best" in text
+    assert "staff member will confirm" not in text
+    assert "pending staff confirmation" not in text
+
+
+async def test_availability_question_without_calendar_connection_needs_manual_review(
+    client: AsyncClient,
+):
+    token = await login(client)
+    simulated = await create_simulator_message(
+        client,
+        token,
+        body="Can we schedule a meeting tomorrow at 5?",
+    )
+
+    reply = await generate_reply(client, token, simulated["conversation_id"])
+
+    text = reply["suggested_text"].lower()
+    assert reply["generation_method"] == "calendar_availability_v1"
+    assert reply["answer_supported"] is False
+    assert "check availability" in text
+    assert "manually" in text
+    assert "uploaded company documents" not in text
 
 
 async def test_e2e_cross_tenant_suggested_reply_does_not_use_other_tenant_sources(
