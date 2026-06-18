@@ -139,6 +139,40 @@ Stop the stack and remove database volumes:
 docker compose down -v
 ```
 
+### Google Calendar Sync
+
+Calendar Sync v1 uses one shared Google Calendar connection per tenant. A
+manager connects the tenant calendar from **Settings**, then staff and managers
+can create events from conversation detail or task rows. EventSense login emails
+do not need to match the Gmail account used for OAuth.
+
+Google Cloud setup summary:
+
+- Enable the Google Calendar API.
+- Configure an OAuth consent screen and add local test users, for example
+  `elegantweddings12@gmail.com` and `rayanhalabi43@gmail.com`.
+- Create an OAuth Web Client.
+- Add this local redirect URI to the OAuth client:
+  `http://localhost:8088/api/v1/integrations/calendar/google/callback`.
+
+Required environment variables:
+
+```env
+GOOGLE_CALENDAR_ENABLED=true
+GOOGLE_CLIENT_ID=your-google-web-client-id
+GOOGLE_CLIENT_SECRET=your-google-web-client-secret
+GOOGLE_REDIRECT_URI=http://localhost:8088/api/v1/integrations/calendar/google/callback
+GOOGLE_CALENDAR_SCOPES=https://www.googleapis.com/auth/calendar.events
+FRONTEND_URL=http://localhost:5173
+CALENDAR_TOKEN_ENCRYPTION_KEY=replace-with-a-long-random-secret
+```
+
+To connect locally, log in as a tenant manager such as
+`admin@elegant-weddings.demo`, open `/settings`, and click **Connect Google
+Calendar**. Use the real Gmail test user in Google's OAuth screen. The Settings
+page should return to `/settings?calendar=connected` and show the connected
+Gmail address.
+
 ### AI Evaluations
 
 Offline, deterministic evaluations of the AI features. They run inside the API

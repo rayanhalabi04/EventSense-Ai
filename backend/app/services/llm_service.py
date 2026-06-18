@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Protocol
 
 import httpx
@@ -25,8 +26,19 @@ class LLMReplyResponse:
     model: str
 
 
+@dataclass(frozen=True)
+class LLMSmallTalkRequest:
+    client_message: str
+
+
 class LLMClient(Protocol):
     async def generate_suggested_reply(self, request: LLMReplyRequest) -> LLMReplyResponse:
+        ...
+
+    async def generate_safe_small_talk_reply(
+        self,
+        request: LLMSmallTalkRequest,
+    ) -> LLMReplyResponse:
         ...
 
 
@@ -53,6 +65,33 @@ class OpenAIChatClient:
             ],
             "temperature": 0.2,
             "max_tokens": 800,
+        }
+        async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
+            response = await client.post(
+                f"{self.base_url}/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {self.api_key}",
+                    "Content-Type": "application/json",
+                },
+                json=payload,
+            )
+            response.raise_for_status()
+        data = response.json()
+        text = data["choices"][0]["message"]["content"]
+        return LLMReplyResponse(text=str(text).strip(), model=self.model)
+
+    async def generate_safe_small_talk_reply(
+        self,
+        request: LLMSmallTalkRequest,
+    ) -> LLMReplyResponse:
+        payload = {
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": _safe_small_talk_system_prompt()},
+                {"role": "user", "content": _safe_small_talk_user_prompt(request)},
+            ],
+            "temperature": 0.2,
+            "max_tokens": 60,
         }
         async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
             response = await client.post(
@@ -109,15 +148,52 @@ class GeminiClient:
         text = "".join(str(part.get("text", "")) for part in parts).strip()
         return LLMReplyResponse(text=text, model=self.model)
 
+    async def generate_safe_small_talk_reply(
+        self,
+        request: LLMSmallTalkRequest,
+    ) -> LLMReplyResponse:
+        payload = {
+            "systemInstruction": {"parts": [{"text": _safe_small_talk_system_prompt()}]},
+            "contents": [
+                {
+                    "role": "user",
+                    "parts": [{"text": _safe_small_talk_user_prompt(request)}],
+                }
+            ],
+            "generationConfig": {
+                "temperature": 0.2,
+                "maxOutputTokens": 60,
+            },
+        }
+        async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
+            response = await client.post(
+                f"{self.base_url}/models/{self.model}:generateContent",
+                params={"key": self.api_key},
+                json=payload,
+            )
+            response.raise_for_status()
+        data = response.json()
+        parts = data["candidates"][0]["content"].get("parts", [])
+        text = "".join(str(part.get("text", "")) for part in parts).strip()
+        return LLMReplyResponse(text=text, model=self.model)
+
 
 class FakeLLMClient:
     def __init__(self, text: str, *, model: str = "fake-llm") -> None:
         self.text = text
         self.model = model
         self.requests: list[LLMReplyRequest] = []
+        self.small_talk_requests: list[LLMSmallTalkRequest] = []
 
     async def generate_suggested_reply(self, request: LLMReplyRequest) -> LLMReplyResponse:
         self.requests.append(request)
+        return LLMReplyResponse(text=self.text, model=self.model)
+
+    async def generate_safe_small_talk_reply(
+        self,
+        request: LLMSmallTalkRequest,
+    ) -> LLMReplyResponse:
+        self.small_talk_requests.append(request)
         return LLMReplyResponse(text=self.text, model=self.model)
 
 
@@ -178,6 +254,28 @@ def _system_prompt() -> str:
         "should mention reviewing what changes are possible or next steps. "
         "Never mention drafts, internal notes, staff review, approval, or that the reply was sent "
         "automatically. Do not include source citations or labels — phrase any details naturally."
+    )
+
+
+def _safe_small_talk_system_prompt() -> str:
+    prompt_path = Path(__file__).resolve().parents[1] / "prompts" / "safe_small_talk_reply.txt"
+    try:
+        return prompt_path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return (
+            "The message is casual/small-talk and does not require company documents. "
+            "Reply as event agency staff. Keep the reply short, warm, and professional. "
+            "Maximum 1 sentence. Do not mention prices, packages, availability, policies, "
+            "deposits, refunds, contracts, or commitments. Do not invent facts. "
+            "If unsure, return a generic polite reply."
+        )
+
+
+def _safe_small_talk_user_prompt(request: LLMSmallTalkRequest) -> str:
+    return (
+        "Client casual message:\n"
+        f"{redact_pii(request.client_message)}\n\n"
+        "Write only the client-facing reply."
     )
 
 

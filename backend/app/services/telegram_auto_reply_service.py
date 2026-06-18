@@ -296,6 +296,8 @@ class TelegramAutoReplyService:
 
     @staticmethod
     def _generated_reply_skip_reason(suggested: SuggestedReply) -> str | None:
+        if suggested.small_talk_category is not None:
+            return "staff_review_required"
         if not suggested.answer_supported or not suggested.rag_sources:
             if suggested.refusal_reason == SAFE_REFUSAL:
                 return "guardrail_refusal"
