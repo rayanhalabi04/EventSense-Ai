@@ -371,6 +371,143 @@ def test_cancellation_reply_uses_cancellation_specific_followup() -> None:
     assert "cancellation next steps" in text
 
 
+def test_cancellation_deposit_reply_does_not_expose_document_title() -> None:
+    document_id = uuid4()
+    rag_result = RagResult(
+        query="I want to cancel the booking. Is the deposit refundable?",
+        answer_supported=True,
+        sources=[
+            _source(
+                document_id=document_id,
+                title="Elegant Weddings Deposit Policy",
+                document_type="deposit_policy",
+                content=(
+                    "Elegant Weddings Deposit Policy\n\n"
+                    "A 25 percent deposit of the package fee is required to reserve a date. "
+                    "The deposit is fully refundable within the first seven days and "
+                    "non-refundable afterwards."
+                ),
+                score=0.94,
+            )
+        ],
+    )
+
+    generated = generate_reply_text(
+        rag_result=rag_result,
+        message_body="I want to cancel the booking. Is the deposit refundable?",
+        risk_level="medium",
+        intent_label="cancellation_request",
+    )
+
+    text = generated.suggested_text.lower()
+    assert generated.answer_supported is True
+    assert "elegant weddings deposit policy" not in text
+    assert "fully refundable within the first seven days" in text
+    assert "non-refundable afterwards" in text
+    assert any(term in text for term in ("refundable", "non-refundable", "refund", "booking terms"))
+    assert "manager" in text
+
+
+def test_cancellation_deposit_reply_mentions_partial_refund_deadline() -> None:
+    document_id = uuid4()
+    rag_result = RagResult(
+        query="I want to cancel. Is the deposit refundable?",
+        answer_supported=True,
+        sources=[
+            _source(
+                document_id=document_id,
+                title="Royal Events Deposit Policy",
+                document_type="deposit_policy",
+                content=(
+                    "The deposit is partially refundable if cancellation happens "
+                    "more than 30 days before the event. The deposit is non-refundable "
+                    "if cancellation happens within 30 days of the event."
+                ),
+                score=0.91,
+            )
+        ],
+    )
+
+    generated = generate_reply_text(
+        rag_result=rag_result,
+        message_body="I want to cancel. Is the deposit refundable?",
+        risk_level="medium",
+        intent_label="cancellation_request",
+    )
+
+    text = generated.suggested_text.lower()
+    assert "partially refundable" in text
+    assert "more than 30 days before the event" in text
+    assert "royal events deposit policy" not in text
+
+
+def test_cancellation_deposit_reply_uses_booking_terms_when_refundability_unclear() -> None:
+    document_id = uuid4()
+    rag_result = RagResult(
+        query="I want to cancel. Is the deposit refundable?",
+        answer_supported=True,
+        sources=[
+            _source(
+                document_id=document_id,
+                title="Deposit Policy",
+                document_type="deposit_policy",
+                content="A 25 percent deposit of the package fee is required to reserve a date.",
+                score=0.88,
+            )
+        ],
+    )
+
+    generated = generate_reply_text(
+        rag_result=rag_result,
+        message_body="I want to cancel. Is the deposit refundable?",
+        risk_level="medium",
+        intent_label="cancellation_request",
+    )
+
+    text = generated.suggested_text.lower()
+    assert "booking terms" in text
+    assert "does not clearly define refundability" in text
+    assert "non-refundable" not in text
+
+
+@pytest.mark.asyncio
+async def test_llm_reply_removes_raw_document_title() -> None:
+    document_id = uuid4()
+    rag_result = RagResult(
+        query="I want to cancel. Is the deposit refundable?",
+        answer_supported=True,
+        sources=[
+            _source(
+                document_id=document_id,
+                title="Elegant Weddings Deposit Policy",
+                document_type="deposit_policy",
+                content="The booking deposit is non-refundable after booking confirmation.",
+                score=0.91,
+            )
+        ],
+    )
+    fake = FakeLLMClient(
+        "According to Elegant Weddings Deposit Policy, the booking deposit is "
+        "non-refundable after booking confirmation."
+    )
+
+    generated = await generate_reply_text_with_optional_llm(
+        rag_result=rag_result,
+        message_body="I want to cancel. Is the deposit refundable?",
+        intent_label="cancellation_request",
+        risk_level="medium",
+        risk_reason="cancellation request",
+        tenant_slug="elegant-weddings",
+        conversation_memory=[],
+        llm_client_factory=lambda: fake,
+    )
+
+    text = generated.suggested_text.lower()
+    assert generated.generation_method == "llm_v1"
+    assert "elegant weddings deposit policy" not in text
+    assert "according to our policy" in text
+
+
 @pytest.mark.asyncio
 async def test_complaint_llm_reply_replaces_pricing_followup() -> None:
     document_id = uuid4()
@@ -432,6 +569,66 @@ def test_pricing_reply_can_use_pricing_followup() -> None:
     )
 
     assert "choose the best option" in generated.suggested_text.lower()
+
+
+def test_pricing_followup_replaces_duplicate_generic_endings() -> None:
+    text = (
+        "Thank you for your interest in our wedding packages! "
+        "The Classic Package starts at $3,500 for up to 80 guests. "
+        "We would be happy to help you choose the best option. "
+        "A member of our team can help you choose the best option based on your event needs."
+    )
+
+    result = apply_intent_followup_sentence(text, "pricing_request")
+    lowered = result.lower()
+
+    assert "classic package starts at $3,500" in lowered
+    assert lowered.count("choose the best option") == 1
+    assert "we would be happy to help you choose" not in lowered
+    assert result.endswith(
+        "A member of our team can help you choose the best option based on your event needs."
+    )
+
+
+@pytest.mark.asyncio
+async def test_llm_pricing_reply_dedupes_generic_endings() -> None:
+    document_id = uuid4()
+    rag_result = RagResult(
+        query="I want to ask about your wedding packages.",
+        answer_supported=True,
+        sources=[
+            _source(
+                document_id=document_id,
+                title="Pricing Packages",
+                document_type="pricing",
+                content="1. CLASSIC PACKAGE - $3,500 Guest count limit: Up to 80 guests.",
+                score=0.91,
+            )
+        ],
+    )
+    fake = FakeLLMClient(
+        "Thank you for your interest in our wedding packages! "
+        "The Classic Package starts at $3,500 for up to 80 guests. "
+        "We would be happy to help you choose the best option. "
+        "A member of our team can help you choose the best option based on your event needs."
+    )
+
+    generated = await generate_reply_text_with_optional_llm(
+        rag_result=rag_result,
+        message_body="I want to ask about your wedding packages.",
+        intent_label="pricing_request",
+        risk_level="low",
+        risk_reason=None,
+        tenant_slug="elegant-weddings",
+        conversation_memory=[],
+        llm_client_factory=lambda: fake,
+    )
+
+    lowered = generated.suggested_text.lower()
+    assert generated.generation_method == "llm_v1"
+    assert "$3,500" in generated.suggested_text
+    assert lowered.count("choose the best option") == 1
+    assert "we would be happy to help you choose" not in lowered
 
 
 def test_payment_issue_gets_payment_specific_followup() -> None:

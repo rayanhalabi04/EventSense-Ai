@@ -72,6 +72,8 @@ class RagResult:
 def route_document_types(query: str) -> list[DocumentType] | None:
     text = query.lower()
     if any(word in text for word in ("price", "pricing", "package", "cost", "rate", "inclusion")):
+        if any(word in text for word in ("guest count", "headcount", "guest", "guests", "capacity")):
+            return [DocumentType.pricing, DocumentType.package, DocumentType.faq]
         return [DocumentType.pricing, DocumentType.package]
     if any(word in text for word in ("cancel", "cancellation")):
         if any(word in text for word in ("deposit", "payment", "paid", "pay", "installment")):
@@ -127,6 +129,7 @@ async def retrieve(
     else:
         safe_query = query
 
+    safe_query = _expand_query_for_retrieval(safe_query)
     routed_types = [document_type_filter] if document_type_filter is not None else route_document_types(safe_query)
     if audit:
         AuditLogService.record(
@@ -266,6 +269,18 @@ async def retrieve(
 
 async def _tenant_slug(session: AsyncSession, tenant_id: UUID) -> str | None:
     return await TenantRepository(session).get_slug(tenant_id)
+
+
+def _expand_query_for_retrieval(query: str) -> str:
+    text = query.lower()
+    additions: list[str] = []
+    if any(word in text for word in ("price", "prices", "pricing", "cost", "costs", "rate", "rates")):
+        additions.append("pricing prices package packages cost rate")
+    if any(word in text for word in ("guest count", "headcount", "guest", "guests", "capacity")):
+        additions.append("guest count guests capacity catering seating")
+    if not additions:
+        return query
+    return f"{query} {' '.join(additions)}"
 
 
 def _rag_source_from_dict(source: dict[str, object]) -> RagSource:

@@ -39,6 +39,35 @@ async def test_contextual_rag_query_rewrites_price_followup_from_recent_memory()
     assert query == "Will adding 30 more guests to our wedding package change the price?"
 
 
+async def test_contextual_rag_query_uses_guest_count_change_from_to_memory() -> None:
+    memory = [
+        ConversationMemoryMessage(
+            message_id=str(uuid4()),
+            direction="inbound",
+            body="We need to change the guest count from 150 to 220.",
+            sent_at="2026-06-16T10:00:00+00:00",
+        ),
+        ConversationMemoryMessage(
+            message_id="current",
+            direction="inbound",
+            body="Will that change the price?",
+            sent_at="2026-06-16T10:01:00+00:00",
+        ),
+    ]
+
+    query = build_contextual_rag_query(
+        "Will that change the price?",
+        memory,
+        current_message_id="current",
+    )
+
+    lowered = query.lower()
+    assert "guest count increased from 150 to 220 guests" in lowered
+    assert "price" in lowered
+    assert "invoice" in lowered
+    assert "faq" in lowered
+
+
 async def test_contextual_rag_query_does_not_rewrite_without_prior_context() -> None:
     memory = [
         ConversationMemoryMessage(

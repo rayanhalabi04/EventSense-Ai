@@ -169,14 +169,31 @@ _REFUND_OR_CANCELLATION_TERMS = (
     "refundable",
     "non-refundable",
 )
+_DEPOSIT_REFUND_QUESTION_TERMS = _REFUND_OR_CANCELLATION_TERMS + (
+    "deposit",
+    "booking terms",
+)
 
 _FOLLOWUP_REFERENCE_PATTERN = re.compile(
     r"\b(that|this|it)\b|\bthe\s+change\b|\bchange\s+the\s+price\b",
     re.IGNORECASE,
 )
+_PRICE_OR_INVOICE_PATTERN = re.compile(
+    r"\b(price|prices|pricing|cost|costs|rate|rates|invoice|balance|quote|quoted)\b",
+    re.IGNORECASE,
+)
 _REFERENCE_REPLACEMENTS = (
     re.compile(r"\bthe\s+change\b", re.IGNORECASE),
     re.compile(r"\b(that|this|it)\b", re.IGNORECASE),
+)
+_GUEST_COUNT_CHANGE_PATTERN = re.compile(
+    r"\b(?:change|changing|update|updating|increase|increasing|raise|raising|adjust|adjusting)"
+    r"\s+(?:the\s+)?(?:guest\s+count|headcount|guests?)\s+from\s+(\d+)\s+to\s+(\d+)\b",
+    re.IGNORECASE,
+)
+_GUEST_COUNT_FROM_TO_PATTERN = re.compile(
+    r"\bfrom\s+(\d+)\s+(?:guests?|people|pax)?\s+to\s+(\d+)\s+(?:guests?|people|pax)?\b",
+    re.IGNORECASE,
 )
 _GUEST_COUNT_OPERATIONAL_PATTERNS = (
     re.compile(r"\bextra\s+guests?\b", re.IGNORECASE),
@@ -218,10 +235,39 @@ _CONTACT_FOLLOWUP_PATTERNS = (
 )
 _OLD_GENERIC_FOLLOWUP_SENTENCES = (
     PRICING_FOLLOWUP_SENTENCE,
+    "We would be happy to help you choose the best option.",
+    "We would be happy to help you choose the best option for your event.",
+    "We would be happy to help you choose the best option based on your event needs.",
+    "We'd be happy to help you choose the best option.",
+    "We'd be happy to help you choose the best option for your event.",
+    "A team member can help you choose the best option.",
+    "A team member can help you choose the best option based on your event needs.",
     "Our team will review your request and follow up with you.",
     "A member of our team will review your request and follow up with the details.",
     "A member of our team will review your request and follow up with you shortly.",
     "A team member will follow up with you shortly.",
+)
+_GENERIC_FOLLOWUP_STARTS = (
+    "a member of our team",
+    "a team member",
+    "our team",
+    "a manager or team member",
+    "we would be happy",
+    "we'd be happy",
+)
+_GENERIC_FOLLOWUP_MARKERS = (
+    "help you choose",
+    "choose the best option",
+    "share more details",
+    "share the full details",
+    "confirm the details",
+    "confirm whether",
+    "guide you through",
+    "check availability",
+    "verify the payment",
+    "review your request",
+    "review your booking",
+    "follow up",
 )
 
 _SMALL_TALK_PHRASES = {
@@ -261,6 +307,34 @@ _MEETING_CONFIRMATION_TERMS = (
     "appointment",
     "speaking with you",
     "speak with you",
+)
+_EVENT_TYPE_TERMS = (
+    ("wedding", "wedding"),
+    ("reception", "reception"),
+    ("engagement", "engagement"),
+    ("bridal shower", "bridal shower"),
+    ("corporate dinner", "corporate dinner"),
+    ("birthday", "birthday"),
+    ("ceremony", "ceremony"),
+)
+_MONTH_DATE_PATTERN = re.compile(
+    r"\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|"
+    r"jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|"
+    r"dec(?:ember)?)\s+\d{1,2}(?:st|nd|rd|th)?(?:,\s*\d{4})?\b",
+    re.IGNORECASE,
+)
+_DAY_MONTH_DATE_PATTERN = re.compile(
+    r"\b\d{1,2}(?:st|nd|rd|th)?\s+(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|"
+    r"apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|"
+    r"oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)(?:,?\s*\d{4})?\b",
+    re.IGNORECASE,
+)
+_NUMERIC_DATE_PATTERN = re.compile(r"\b\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?\b")
+_RELATIVE_DATE_PATTERN = re.compile(
+    r"\b(?:today|tomorrow|tonight|this\s+week|next\s+week|"
+    r"(?:this|next)\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)|"
+    r"monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b",
+    re.IGNORECASE,
 )
 _CONFIRMED_MEETING_TERMS = (
     "confirmed",
@@ -453,7 +527,52 @@ def _clean_source_sentence(sentence: str) -> str:
     cleaned = re.sub(r"\s+", " ", sentence.strip())
     cleaned = re.sub(r"(?i)^(?:faq\s*:\s*)?(?:q|a)\s*:\s*", "", cleaned)
     cleaned = re.sub(r"(?i)\b(?:q|a)\s*:\s*", "", cleaned)
+    cleaned = _strip_leading_document_heading(cleaned)
     return cleaned.strip()
+
+
+def _strip_leading_document_heading(text: str, document_title: str | None = None) -> str:
+    cleaned = text.strip()
+    title = (document_title or "").strip()
+    if title and cleaned.lower().startswith(title.lower()):
+        cleaned = cleaned[len(title) :].lstrip(" \t\r\n:-")
+
+    return re.sub(
+        r"(?i)^(?:[a-z0-9&'/-]+\s+){0,8}"
+        r"(?:deposit policy|cancellation policy|pricing packages|guest count policy|"
+        r"contract terms|services faq|faq)\s+",
+        "",
+        cleaned,
+        count=1,
+    ).strip()
+
+
+def _source_content_for_reply(source: dict[str, object]) -> str:
+    return _strip_leading_document_heading(
+        str(source.get("content", "")),
+        str(source.get("document_title", "")),
+    )
+
+
+def _remove_source_titles_from_reply(text: str, sources: Sequence[dict[str, object]]) -> str:
+    cleaned = text
+    titles = sorted(
+        {
+            str(source.get("document_title", "")).strip()
+            for source in sources
+            if str(source.get("document_title", "")).strip()
+        },
+        key=len,
+        reverse=True,
+    )
+    for title in titles:
+        cleaned = re.sub(
+            rf"(?i)\b(?:according to|based on)\s+(?:the\s+)?{re.escape(title)}\b[:,]?",
+            "According to our policy,",
+            cleaned,
+        )
+        cleaned = re.sub(rf"(?i)\b{re.escape(title)}\b[:,]?", "our policy", cleaned)
+    return _normalize_reply_spacing(cleaned)
 
 
 def _first_natural_source_sentence(
@@ -572,24 +691,42 @@ def followup_sentence_for_intent(intent_label: str | None) -> str:
 def apply_intent_followup_sentence(text: str, intent_label: str | None) -> str:
     """Ensure the draft ends with one intent-appropriate follow-up sentence."""
     desired = followup_sentence_for_intent(intent_label)
-    cleaned = text
+    cleaned = _remove_generic_followup_sentences(text)
     for sentence in _OLD_GENERIC_FOLLOWUP_SENTENCES:
-        if sentence == PRICING_FOLLOWUP_SENTENCE and intent_label == "pricing_request":
-            continue
         cleaned = _remove_sentence(cleaned, sentence)
 
-    if _contains_sentence(cleaned, desired):
-        return _normalize_reply_spacing(cleaned)
     return _normalize_reply_spacing(f"{cleaned.rstrip()} {desired}")
-
-
-def _contains_sentence(text: str, sentence: str) -> bool:
-    return sentence.lower() in re.sub(r"\s+", " ", text).lower()
 
 
 def _remove_sentence(text: str, sentence: str) -> str:
     pattern = re.compile(r"(?<!\S)" + re.escape(sentence) + r"(?!\S)", re.IGNORECASE)
     return pattern.sub("", text)
+
+
+def _remove_generic_followup_sentences(text: str) -> str:
+    """Remove model/template next-step closings before appending one canonical line."""
+    out_lines: list[str] = []
+    for line in text.split("\n"):
+        if not line.strip():
+            out_lines.append("")
+            continue
+        kept = [
+            sentence.strip()
+            for sentence in re.split(r"(?<=[.!?])\s+", line.strip())
+            if sentence.strip() and not _is_generic_followup_sentence(sentence)
+        ]
+        if kept:
+            out_lines.append(" ".join(kept))
+    return _normalize_reply_spacing("\n".join(out_lines))
+
+
+def _is_generic_followup_sentence(sentence: str) -> bool:
+    normalized = re.sub(r"\s+", " ", sentence.strip().strip("\"'")).lower()
+    if not normalized:
+        return False
+    return normalized.startswith(_GENERIC_FOLLOWUP_STARTS) and any(
+        marker in normalized for marker in _GENERIC_FOLLOWUP_MARKERS
+    )
 
 
 def _normalize_reply_spacing(text: str) -> str:
@@ -765,12 +902,107 @@ def _needs_escalation(message_body: str, content: str, risk_level: str | None) -
     return any(keyword in haystack for keyword in _ESCALATION_KEYWORDS)
 
 
+def _is_cancellation_deposit_refund_question(message_body: str, intent_label: str | None) -> bool:
+    if intent_label != "cancellation_request":
+        return False
+    normalized = message_body.lower()
+    return any(term in normalized for term in _DEPOSIT_REFUND_QUESTION_TERMS)
+
+
+def _deposit_refund_summary_from_sources(content: str) -> str:
+    normalized = re.sub(r"\s+", " ", content).strip()
+    lowered = normalized.lower()
+
+    booking_confirmation = re.search(
+        r"\bdeposit\b[^.!?]{0,120}\bnon-refundable\b[^.!?]{0,80}\bafter booking confirmation\b",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    if booking_confirmation:
+        return "Our policy says the booking deposit is non-refundable after booking confirmation."
+
+    within_refund = re.search(
+        r"\bdeposit\b[^.!?]{0,120}\b("
+        r"fully refundable|\d+\s*percent refundable|[a-z-]+\s+percent refundable|"
+        r"partially refundable"
+        r")\b[^.!?]{0,120}\bwithin\s+(?:the\s+)?(?:first\s+)?"
+        r"([a-z0-9-]+)\s+(?:calendar\s+)?days\b",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    if within_refund and "non-refundable afterwards" in lowered:
+        refund_amount = _format_refund_amount(within_refund.group(1))
+        deadline = _format_refund_deadline(within_refund.group(2))
+        return (
+            f"The deposit is {refund_amount} refundable within the first {deadline} "
+            "days and non-refundable afterwards."
+        )
+
+    cancel_refund = re.search(
+        r"\bcancel\b[^.!?]{0,120}\bwithin\s+"
+        r"([a-z0-9-]+)\s+(?:calendar\s+)?days\b[^.!?]{0,160}\breceive\s+a\s+"
+        r"(full|\d+\s*percent|[a-z-]+\s+percent|partial)\s+"
+        r"(?:refund\s+of\s+the\s+deposit|deposit refund)\b",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    if cancel_refund and re.search(r"\bafter\b[^.!?]{0,120}\bdeposit\b[^.!?]{0,80}\bnon-refundable\b", normalized, flags=re.IGNORECASE):
+        deadline = _format_refund_deadline(cancel_refund.group(1))
+        refund_amount = _format_refund_amount(cancel_refund.group(2))
+        return (
+            f"The deposit is {refund_amount} refundable within the first {deadline} "
+            "days and non-refundable afterwards."
+        )
+
+    partial_before_event = re.search(
+        r"\bdeposit\b[^.!?]{0,140}\bpartially refundable\b[^.!?]{0,160}\b"
+        r"(?:more than|at least)\s+(\d+|[a-z-]+)\s+days?\s+before\b",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    if partial_before_event:
+        deadline = _format_refund_deadline(partial_before_event.group(1))
+        return (
+            f"The deposit may be partially refundable if cancellation happens more "
+            f"than {deadline} days before the event."
+        )
+
+    if "deposit" in lowered and any(term in lowered for term in ("required", "reserve", "reserves")):
+        return (
+            "The source confirms a deposit is required, but it does not clearly "
+            "define refundability. A staff member will review the booking terms "
+            "before confirming any refund."
+        )
+
+    return (
+        "A staff member will review the booking terms before confirming whether "
+        "the deposit is refundable."
+    )
+
+
+def _format_refund_amount(value: str) -> str:
+    normalized = re.sub(r"\s+", " ", value.strip().lower())
+    normalized = normalized.replace("-", " ")
+    if normalized in {"full", "fully refundable"}:
+        return "fully"
+    if normalized in {"partial", "partially refundable"}:
+        return "partially"
+    if normalized.endswith(" refundable"):
+        normalized = normalized[: -len(" refundable")].strip()
+    return normalized
+
+
+def _format_refund_deadline(value: str) -> str:
+    return re.sub(r"\s+", " ", value.strip().lower().replace("-", " "))
+
+
 def build_supported_reply(
     *,
     sources: list[dict[str, object]],
     message_body: str,
     risk_level: str | None,
     intent_label: str | None = None,
+    guest_count_price_context: str | None = None,
 ) -> str:
     """Build a grounded, WhatsApp-style reply from RAG sources only.
 
@@ -779,12 +1011,16 @@ def build_supported_reply(
     """
     primary = sources[0]
     primary_type = str(primary.get("document_type", ""))
-    combined = " ".join(str(source.get("content", "")) for source in sources[:3])
+    combined = " ".join(_source_content_for_reply(source) for source in sources[:3])
     combined_low = combined.lower()
 
     parts: list[str] = [GREETING]
 
-    if "non-refundable" in combined_low and "booking confirmation" in combined_low:
+    if guest_count_price_context is not None:
+        return _guest_count_price_impact_reply(guest_count_price_context, combined)
+    elif _is_cancellation_deposit_refund_question(message_body, intent_label):
+        parts.append(_deposit_refund_summary_from_sources(combined))
+    elif "non-refundable" in combined_low and "booking confirmation" in combined_low:
         parts.append(
             "Our policy says the booking deposit is non-refundable after "
             "booking confirmation."
@@ -896,6 +1132,8 @@ def generate_reply_text(
     message_body: str,
     risk_level: str | None,
     intent_label: str | None = None,
+    conversation_memory: Sequence[ConversationMemoryMessage] | None = None,
+    current_message_id: str | None = None,
 ) -> GeneratedReply:
     """Pure, deterministic generation step (no DB, no auth) for easy testing."""
     if not rag_result.answer_supported or not rag_result.sources:
@@ -913,12 +1151,18 @@ def generate_reply_text(
     # sources we surface/store are deduplicated so each document appears once.
     deduped = _dedupe_sources_by_document(compact)
     source_document_ids = [str(source["document_id"]) for source in deduped]
+    guest_count_price_context = _guest_count_price_followup_context(
+        message_body,
+        conversation_memory or (),
+        current_message_id=current_message_id,
+    )
 
     text = build_supported_reply(
         sources=compact,
         message_body=message_body,
         risk_level=risk_level,
         intent_label=intent_label,
+        guest_count_price_context=guest_count_price_context,
     )
     return GeneratedReply(
         suggested_text=text,
@@ -960,6 +1204,75 @@ def _guest_count_review_reply(message_body: str) -> str:
         "our team will need to review venue capacity, catering availability, "
         "seating arrangements, and any package or price impact. We'll follow up "
         "with you shortly."
+    )
+
+
+def _guest_count_price_impact_reply(context: str, source_content: str) -> str:
+    change = _guest_count_change_details(context)
+    if change is None:
+        return (
+            "Yes, this guest-count change may affect the final invoice. Since the "
+            "updated count may affect package capacity, catering, setup, and "
+            "staffing, our team will review your booking details and confirm the "
+            "updated invoice before final approval."
+        )
+
+    package = _supported_package_for_guest_count(source_content, change[1])
+    if package is not None:
+        return (
+            f"Yes, changing the guest count from {change[0]} to {change[1]} may "
+            f"affect the final invoice. Since the {package} supports up to "
+            f"{change[1]} guests, our team will review your booking details and "
+            "confirm the updated package, capacity, and final invoice before "
+            "approval."
+        )
+
+    return (
+        f"Yes, changing the guest count from {change[0]} to {change[1]} will "
+        "likely affect the price or final invoice. Since "
+        f"{change[1]} guests may affect package capacity, catering, setup, and "
+        "staffing, our team will review your booking details and confirm the "
+        "updated invoice before final approval."
+    )
+
+
+def _guest_count_change_details(context: str) -> tuple[int, int] | None:
+    match = re.search(r"\bfrom\s+(\d+)\s+to\s+(\d+)\s+guests?\b", context, flags=re.IGNORECASE)
+    if not match:
+        return None
+    return int(match.group(1)), int(match.group(2))
+
+
+def _supported_package_for_guest_count(source_content: str, updated_count: int) -> str | None:
+    normalized = re.sub(r"\s+", " ", source_content)
+    pattern = re.compile(
+        r"\b((?:[A-Z][A-Za-z0-9'&-]*\s+){0,5}Package)\b"
+        r"[^.!?]{0,140}?\b(?:accommodates|supports|capacity(?:\s+is)?|up\s+to)\s+"
+        r"(?:up\s+to\s+)?(\d+)\s+guests?\b",
+        re.IGNORECASE,
+    )
+    for match in pattern.finditer(normalized):
+        capacity = int(match.group(2))
+        if capacity == updated_count:
+            return _clean_package_name(match.group(1))
+    return None
+
+
+def _clean_package_name(value: str) -> str:
+    words = re.sub(r"\s+", " ", value.strip()).split(" ")
+    if words and words[0].lower() == "the":
+        words = words[1:]
+    return " ".join(word[:1].upper() + word[1:] for word in words)
+
+
+def _is_guest_count_price_impact_text(text: str) -> bool:
+    lowered = text.lower()
+    return (
+        "changing the guest count from" in lowered
+        and (
+            ("updated invoice" in lowered and "before final approval" in lowered)
+            or "final invoice before approval" in lowered
+        )
     )
 
 
@@ -1063,11 +1376,7 @@ async def _generate_calendar_availability_reply(
     )
     if not parsed.has_exact_time:
         return GeneratedReply(
-            suggested_text=(
-                "Hi, thank you for your message. Could you share your preferred "
-                "date and time for the meeting? We'll check availability and "
-                "follow up with you."
-            ),
+            suggested_text=_no_exact_time_availability_reply(message_body),
             answer_supported=False,
             refusal_reason=AVAILABILITY_PARSE_REFUSAL_REASON,
             source_document_ids=[],
@@ -1146,6 +1455,119 @@ async def _generate_calendar_availability_reply(
     )
 
 
+def _no_exact_time_availability_reply(message_body: str) -> str:
+    date_phrase = _availability_date_phrase(message_body)
+    if _explicit_meeting_request(message_body):
+        if date_phrase:
+            return (
+                f"{GREETING} We can check meeting availability for {date_phrase}. "
+                "Could you share your preferred time?"
+            )
+        return (
+            f"{GREETING} Could you share your preferred date and time for the "
+            "meeting? We'll check availability and follow up with you."
+        )
+
+    event_type = _event_type_phrase(message_body)
+    detail_prompt = _missing_event_detail_prompt(message_body, event_type)
+    if date_phrase:
+        target = _event_availability_target(event_type, date_phrase)
+        return f"{GREETING} We'll check availability for {target}. Could you share {detail_prompt}?"
+
+    return f"{GREETING} Could you share your event date, {detail_prompt}?"
+
+
+def _availability_date_phrase(message_body: str) -> str | None:
+    for pattern in (
+        _MONTH_DATE_PATTERN,
+        _DAY_MONTH_DATE_PATTERN,
+        _NUMERIC_DATE_PATTERN,
+    ):
+        match = pattern.search(message_body)
+        if match:
+            return _clean_date_phrase(match.group(0))
+
+    relative_match = _RELATIVE_DATE_PATTERN.search(message_body)
+    if relative_match:
+        return _clean_date_phrase(relative_match.group(0))
+
+    return None
+
+
+def _clean_date_phrase(value: str) -> str:
+    return re.sub(r"\s+", " ", value).strip(" ,.!?")
+
+
+def _explicit_meeting_request(message_body: str) -> bool:
+    normalized = message_body.lower()
+    return bool(
+        re.search(r"\b(?:meeting|call|appointment)\b", normalized)
+        or re.search(r"\bmeet\b", normalized)
+    )
+
+
+def _event_type_phrase(message_body: str) -> str | None:
+    normalized = message_body.lower()
+    for term, label in _EVENT_TYPE_TERMS:
+        if re.search(rf"\b{re.escape(term)}\b", normalized):
+            return label
+    return None
+
+
+def _event_availability_target(event_type: str | None, date_phrase: str) -> str:
+    target = f"your {event_type}" if event_type else "your event"
+    if _date_phrase_reads_with_on(date_phrase):
+        return f"{target} on {date_phrase}"
+    return f"{target} {date_phrase}"
+
+
+def _date_phrase_reads_with_on(date_phrase: str) -> bool:
+    normalized = date_phrase.lower()
+    explicit_date = (
+        _MONTH_DATE_PATTERN.fullmatch(date_phrase)
+        or _DAY_MONTH_DATE_PATTERN.fullmatch(date_phrase)
+        or _NUMERIC_DATE_PATTERN.fullmatch(date_phrase)
+    )
+    return bool(explicit_date) or normalized in {
+        "monday",
+        "tuesday",
+        "wednesday",
+        "thursday",
+        "friday",
+        "saturday",
+        "sunday",
+    }
+
+
+def _missing_event_detail_prompt(message_body: str, event_type: str | None) -> str:
+    normalized = message_body.lower()
+    missing: list[str] = []
+    guest_count_pattern = (
+        r"\b(?:about|around|approx(?:imately)?|for)?\s*"
+        r"\d+\s*(?:guests?|people|pax)\b"
+    )
+    if not re.search(guest_count_pattern, normalized):
+        missing.append("guest count")
+    if not re.search(r"\b(?:venue|location|address)\b", normalized):
+        missing.append("venue/location")
+    if not re.search(r"\b(?:package|classic|premium|luxury|gold|silver)\b", normalized):
+        missing.append("package preference")
+    if event_type is None:
+        missing.append("event type")
+    if not missing:
+        return "any other event details"
+    return _format_natural_list(missing)
+
+
+def _format_natural_list(items: Sequence[str]) -> str:
+    item_list = list(items)
+    if len(item_list) <= 1:
+        return item_list[0] if item_list else "details"
+    if len(item_list) == 2:
+        return f"{item_list[0]} and {item_list[1]}"
+    return f"{', '.join(item_list[:-1])}, and {item_list[-1]}"
+
+
 def _format_requested_slot(start_time, end_time) -> str:
     start_day = start_time.strftime("%A, %B ") + str(start_time.day)
     return f"{start_day} at {_format_time(start_time)}"
@@ -1200,15 +1622,29 @@ def build_contextual_rag_query(
         return message_body
 
     phrase = _antecedent_phrase(antecedent.body)
+    if (
+        phrase is not None
+        and _PRICE_OR_INVOICE_PATTERN.search(message_body)
+        and _guest_count_change_context(antecedent.body) is not None
+    ):
+        return (
+            f"{_rewrite_followup_reference(message_body, phrase, antecedent.body)} "
+            "guest count pricing invoice FAQ capacity package"
+        )
     if phrase is None:
         return f"{message_body} Previous client message: {antecedent.body.strip()}"
 
+    return _rewrite_followup_reference(message_body, phrase, antecedent.body)
+
+
+def _rewrite_followup_reference(message_body: str, phrase: str, antecedent_body: str) -> str:
     rewritten = message_body
     for pattern in _REFERENCE_REPLACEMENTS:
-        rewritten = pattern.sub(phrase, rewritten, count=1)
-        if rewritten != message_body:
-            return rewritten
-    return f"{message_body} Previous client message: {antecedent.body.strip()}"
+        next_value = pattern.sub(phrase, rewritten, count=1)
+        if next_value != rewritten:
+            return next_value
+        rewritten = next_value
+    return f"{message_body} Previous client message: {antecedent_body.strip()}"
 
 
 def _latest_prior_inbound_memory(
@@ -1233,6 +1669,10 @@ def _antecedent_phrase(text: str) -> str | None:
     if not cleaned:
         return None
 
+    guest_count_context = _guest_count_change_context(cleaned)
+    if guest_count_context is not None:
+        return f"the guest count {guest_count_context}"
+
     add_patterns = (
         r"^(?:can|could|may|would)\s+(?:we|i)\s+add\s+(.+)$",
         r"^is\s+it\s+possible\s+to\s+add\s+(.+)$",
@@ -1247,6 +1687,39 @@ def _antecedent_phrase(text: str) -> str | None:
     return None
 
 
+def _guest_count_change_context(text: str) -> str | None:
+    for pattern in (_GUEST_COUNT_CHANGE_PATTERN, _GUEST_COUNT_FROM_TO_PATTERN):
+        match = pattern.search(text)
+        if not match:
+            continue
+        old_count = match.group(1)
+        new_count = match.group(2)
+        if old_count == new_count:
+            return f"from {old_count} to {new_count} guests"
+        direction = "increased" if int(new_count) > int(old_count) else "changed"
+        return f"{direction} from {old_count} to {new_count} guests"
+    return None
+
+
+def _guest_count_price_followup_context(
+    message_body: str,
+    memory_messages: Sequence[ConversationMemoryMessage],
+    *,
+    current_message_id: str | None,
+) -> str | None:
+    if not _FOLLOWUP_REFERENCE_PATTERN.search(message_body):
+        return None
+    if not _PRICE_OR_INVOICE_PATTERN.search(message_body):
+        return None
+    antecedent = _latest_prior_inbound_memory(
+        memory_messages,
+        current_message_id=current_message_id,
+    )
+    if antecedent is None:
+        return None
+    return _guest_count_change_context(antecedent.body)
+
+
 async def generate_reply_text_with_optional_llm(
     *,
     rag_result: RagResult,
@@ -1255,6 +1728,8 @@ async def generate_reply_text_with_optional_llm(
     risk_level: str | None,
     risk_reason: str | None,
     tenant_slug: str | None,
+    current_message_id: str | None = None,
+    memory_messages: Sequence[ConversationMemoryMessage] | None = None,
     conversation_memory: list[dict[str, str]] | None = None,
     llm_client_factory: Callable[[], LLMClient | None] | None = None,
 ) -> GeneratedReply:
@@ -1263,8 +1738,12 @@ async def generate_reply_text_with_optional_llm(
         message_body=message_body,
         risk_level=risk_level,
         intent_label=intent_label,
+        conversation_memory=memory_messages,
+        current_message_id=current_message_id,
     )
     if not template_reply.answer_supported or not template_reply.rag_sources:
+        return template_reply
+    if _is_guest_count_price_impact_text(template_reply.suggested_text):
         return template_reply
 
     llm_client = (llm_client_factory or get_llm_client)()
@@ -1298,6 +1777,7 @@ async def generate_reply_text_with_optional_llm(
         if not llm_text:
             raise ValueError("llm_empty_response")
         llm_text = apply_intent_followup_sentence(llm_text, intent_label)
+        llm_text = _remove_source_titles_from_reply(llm_text, template_reply.rag_sources)
         output_result = check_output_guardrails(
             llm_text,
             template_reply.rag_sources,
@@ -1440,6 +1920,8 @@ async def generate_suggested_reply(
             risk_level=message.risk_level,
             risk_reason=message.risk_reason,
             tenant_slug=tenant_slug,
+            current_message_id=str(message.id),
+            memory_messages=memory_messages,
             conversation_memory=[
                 {
                     "message_id": item.message_id,

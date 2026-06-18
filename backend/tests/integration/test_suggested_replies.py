@@ -10,6 +10,7 @@ from app.models.audit_log import AuditLog
 from app.models.document import DocumentChunk
 from app.schemas.calendar import CalendarAvailabilityResponse, CalendarAvailabilitySlot
 from app.services.conversation_memory_service import ConversationMemoryMessage
+from app.services.intent_classifier_service import IntentClassification
 from app.services.llm_service import FakeLLMClient
 from app.services.audit_log_service import (
     AUDIT_EVENT_GUARDRAIL_OUTPUT_REDACTED,
@@ -99,6 +100,13 @@ async def generate_reply(
     )
     assert response.status_code == 201, response.text
     return response.json()
+
+
+def force_intent(monkeypatch: pytest.MonkeyPatch, label: str, confidence: float = 0.95) -> None:
+    monkeypatch.setattr(
+        "app.services.simulator_service.IntentClassifierService.classify",
+        lambda body: IntentClassification(label=label, confidence=confidence),
+    )
 
 
 async def audit_events(db_session: AsyncSession, event_type: str) -> list[AuditLog]:
@@ -405,6 +413,82 @@ async def test_short_availability_question_does_not_use_small_talk_llm(
     assert fake.small_talk_requests == []
 
 
+async def test_event_availability_with_date_acknowledges_date_not_meeting(
+    client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    force_intent(monkeypatch, "availability_question")
+    token = await login(client)
+    simulated = await create_simulator_message(
+        client,
+        token,
+        body="Hello, are you available for a wedding on August 24?",
+    )
+
+    reply = await generate_reply(client, token, simulated["conversation_id"])
+
+    text = reply["suggested_text"]
+    lowered = text.lower()
+    assert reply["generation_method"] == "calendar_availability_v1"
+    assert reply["answer_supported"] is False
+    assert reply["rag_sources"] == []
+    assert "august 24" in lowered
+    assert "wedding" in lowered
+    assert "preferred date and time for the meeting" not in lowered
+    assert "meeting" not in lowered
+    assert "guest count" in lowered
+    assert "venue/location" in lowered
+    assert "package preference" in lowered
+
+
+async def test_relative_event_availability_asks_for_missing_event_details(
+    client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    force_intent(monkeypatch, "availability_question")
+    token = await login(client)
+    simulated = await create_simulator_message(
+        client,
+        token,
+        body="Are you free next Saturday for a wedding?",
+    )
+
+    reply = await generate_reply(client, token, simulated["conversation_id"])
+
+    lowered = reply["suggested_text"].lower()
+    assert reply["generation_method"] == "calendar_availability_v1"
+    assert "availability" in lowered
+    assert "wedding" in lowered
+    assert "next saturday" in lowered
+    assert "guest count" in lowered
+    assert "venue/location" in lowered
+    assert "package preference" in lowered
+    assert "meeting" not in lowered
+
+
+async def test_meeting_availability_with_date_can_ask_for_meeting_time(
+    client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    force_intent(monkeypatch, "availability_question")
+    token = await login(client)
+    simulated = await create_simulator_message(
+        client,
+        token,
+        body="Can we schedule a meeting tomorrow?",
+    )
+
+    reply = await generate_reply(client, token, simulated["conversation_id"])
+
+    lowered = reply["suggested_text"].lower()
+    assert reply["generation_method"] == "calendar_availability_v1"
+    assert "meeting availability" in lowered
+    assert "tomorrow" in lowered
+    assert "preferred time" in lowered
+    assert "guest count" not in lowered
+    assert "venue/location" not in lowered
+
+
 async def test_availability_question_suggested_reply_uses_calendar_instead_of_rag(
     client: AsyncClient,
     monkeypatch: pytest.MonkeyPatch,
@@ -589,6 +673,126 @@ async def test_generate_reply_for_elegant_deposit_question(
     assert any(e.details.get("suggested_reply_id") == reply["id"] for e in events)
 
 
+async def test_cancellation_deposit_refund_reply_uses_tenant_policy_without_title(
+    client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    force_intent(monkeypatch, "cancellation_request")
+    monkeypatch.setattr("app.services.suggested_reply_service.get_llm_client", lambda: None)
+    elegant_token = await login(client)
+    royal_token = await login_royal(client)
+    elegant_deposit = await create_document(
+        client,
+        elegant_token,
+        title="Elegant Weddings Deposit Policy",
+        document_type="deposit_policy",
+        content_text=(
+            "Elegant Weddings Deposit Policy\n\n"
+            "A 25 percent deposit of the package fee is required to reserve a date. "
+            "The deposit is fully refundable within the first seven days and "
+            "non-refundable afterwards."
+        ),
+    )
+    elegant_cancellation = await create_document(
+        client,
+        elegant_token,
+        title="Elegant Weddings Cancellation Policy",
+        document_type="cancellation_policy",
+        content_text=(
+            "Elegant Weddings Cancellation Policy\n\n"
+            "Couples may cancel within seven calendar days of signing and receive "
+            "a full deposit refund. After the first seven days the deposit becomes "
+            "non-refundable."
+        ),
+    )
+    royal_deposit = await create_document(
+        client,
+        royal_token,
+        title="Royal Events Deposit Policy",
+        document_type="deposit_policy",
+        content_text=(
+            "Royal Events Deposit Policy\n\n"
+            "A 30 percent deposit of the package fee is required to reserve a date. "
+            "The deposit is 50 percent refundable within the first fourteen days "
+            "and non-refundable afterwards."
+        ),
+    )
+    royal_cancellation = await create_document(
+        client,
+        royal_token,
+        title="Royal Events Cancellation Policy",
+        document_type="cancellation_policy",
+        content_text=(
+            "Royal Events Cancellation Policy\n\n"
+            "Clients may cancel within fourteen calendar days of signing and "
+            "receive a 50 percent refund of the deposit. After fourteen days the "
+            "deposit is non-refundable."
+        ),
+    )
+
+    body = "I want to cancel the booking. Is the deposit refundable?"
+    elegant_message = await create_simulator_message(client, elegant_token, body=body)
+    royal_message = await create_simulator_message(client, royal_token, body=body)
+
+    elegant_reply = await generate_reply(client, elegant_token, elegant_message["conversation_id"])
+    royal_reply = await generate_reply(client, royal_token, royal_message["conversation_id"])
+
+    elegant_text = elegant_reply["suggested_text"].lower()
+    royal_text = royal_reply["suggested_text"].lower()
+    elegant_ids = {elegant_deposit["id"], elegant_cancellation["id"]}
+    royal_ids = {royal_deposit["id"], royal_cancellation["id"]}
+    elegant_source_ids = {source["document_id"] for source in elegant_reply["rag_sources"]}
+    royal_source_ids = {source["document_id"] for source in royal_reply["rag_sources"]}
+
+    assert elegant_reply["answer_supported"] is True
+    assert "elegant weddings deposit policy" not in elegant_text
+    assert "fully refundable within the first seven days" in elegant_text
+    assert "non-refundable afterwards" in elegant_text
+    assert "fourteen" not in elegant_text
+    assert elegant_source_ids
+    assert elegant_source_ids.issubset(elegant_ids)
+    assert not elegant_source_ids.intersection(royal_ids)
+    assert "Elegant Weddings Deposit Policy" in {
+        source["document_title"] for source in elegant_reply["rag_sources"]
+    }
+
+    assert royal_reply["answer_supported"] is True
+    assert "royal events deposit policy" not in royal_text
+    assert "50 percent refundable within the first fourteen days" in royal_text
+    assert "non-refundable afterwards" in royal_text
+    assert "seven" not in royal_text
+    assert royal_source_ids
+    assert royal_source_ids.issubset(royal_ids)
+    assert not royal_source_ids.intersection(elegant_ids)
+    assert "Royal Events Deposit Policy" in {
+        source["document_title"] for source in royal_reply["rag_sources"]
+    }
+
+
+async def test_cancellation_deposit_refund_no_source_requires_staff_review(
+    client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    force_intent(monkeypatch, "cancellation_request")
+    monkeypatch.setattr("app.services.suggested_reply_service.get_llm_client", lambda: None)
+    token = await login(client)
+    simulated = await create_simulator_message(
+        client,
+        token,
+        body="I want to cancel the booking. Is the deposit refundable?",
+    )
+
+    reply = await generate_reply(client, token, simulated["conversation_id"])
+
+    text = reply["suggested_text"].lower()
+    assert reply["answer_supported"] is False
+    assert reply["source_document_ids"] == []
+    assert reply["rag_sources"] == []
+    assert "staff member to review" in text
+    assert "manager can step in" in text
+    assert "non-refundable" not in text
+
+
 async def test_multi_chunk_document_is_deduped_to_single_source(
     client: AsyncClient,
     db_session: AsyncSession,
@@ -739,6 +943,186 @@ async def test_suggested_reply_loads_recent_memory_for_llm_prompt(
     assert event.details["memory_message_count"] == 1
 
 
+async def test_guest_count_price_followup_uses_recent_memory_context(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr("app.services.suggested_reply_service.get_llm_client", lambda: None)
+    token = await login(client)
+    document = await create_document(
+        client,
+        token,
+        title="Guest Count Price FAQ",
+        document_type="faq",
+        content_text=(
+            "The Pearl Ballroom Package, which starts at 7,200 USD, accommodates "
+            "up to 180 guests. Guest count changes may affect the final invoice "
+            "because catering, seating, capacity, staffing, setup, and package "
+            "requirements are based on the confirmed guest count. The team confirms "
+            "the updated guest count before quoting any revised total."
+        ),
+    )
+
+    simulated = await create_simulator_message(
+        client,
+        token,
+        body="Will that change the price?",
+    )
+
+    class FakeMemoryService:
+        async def load_recent(self, *, tenant_id, conversation_id):
+            return [
+                ConversationMemoryMessage(
+                    message_id="previous-message",
+                    direction="inbound",
+                    body="We need to change the guest count from 150 to 220.",
+                    sent_at="2026-06-11T10:00:00+00:00",
+                ),
+                ConversationMemoryMessage(
+                    message_id=simulated["message_id"],
+                    direction="inbound",
+                    body="Will that change the price?",
+                    sent_at="2026-06-11T10:01:00+00:00",
+                ),
+            ]
+
+    monkeypatch.setattr(
+        "app.services.suggested_reply_service.ConversationMemoryService",
+        lambda: FakeMemoryService(),
+    )
+
+    reply = await generate_reply(client, token, simulated["conversation_id"])
+
+    text = reply["suggested_text"].lower()
+    assert reply["answer_supported"] is True
+    assert reply["source_document_ids"] == [document["id"]]
+    assert "changing the guest count from 150 to 220" in text
+    assert "will likely affect the price or final invoice" in text
+    assert "220 guests may affect package capacity" in text
+    assert "updated invoice" in text
+    assert "package capacity" in text
+    assert "pearl ballroom" not in text
+    assert "choose the best option" not in text
+    assert "7,200 a member" not in text
+    assert "our a member" not in text
+    assert "for up to 180 guests" not in text
+    assert reply["suggested_text"].rstrip().endswith(".")
+    assert not text.startswith("hi, thank you for your message. our wedding packages are")
+
+    event = await latest_generated_event(db_session, reply["id"])
+    rag_query = str(event.details["rag_query"]).lower()
+    assert "guest count increased from 150 to 220 guests" in rag_query
+    assert "invoice" in rag_query
+    assert "faq" in rag_query
+    assert event.details["memory_message_count"] == 2
+
+
+async def test_guest_count_price_followup_mentions_supported_package_at_capacity(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr("app.services.suggested_reply_service.get_llm_client", lambda: None)
+    token = await login(client)
+    document = await create_document(
+        client,
+        token,
+        title="Guest Count Price FAQ",
+        document_type="faq",
+        content_text=(
+            "The Pearl Ballroom Package, which starts at 7,200 USD, accommodates "
+            "up to 180 guests. Guest count changes may affect the final invoice "
+            "because catering, seating, capacity, staffing, setup, and package "
+            "requirements are based on the confirmed guest count."
+        ),
+    )
+
+    simulated = await create_simulator_message(
+        client,
+        token,
+        body="will that change the price?",
+    )
+
+    class FakeMemoryService:
+        async def load_recent(self, *, tenant_id, conversation_id):
+            return [
+                ConversationMemoryMessage(
+                    message_id="previous-message",
+                    direction="inbound",
+                    body="We need to change the guest count from 150 to 180",
+                    sent_at="2026-06-11T10:00:00+00:00",
+                ),
+                ConversationMemoryMessage(
+                    message_id=simulated["message_id"],
+                    direction="inbound",
+                    body="will that change the price?",
+                    sent_at="2026-06-11T10:01:00+00:00",
+                ),
+            ]
+
+    monkeypatch.setattr(
+        "app.services.suggested_reply_service.ConversationMemoryService",
+        lambda: FakeMemoryService(),
+    )
+
+    reply = await generate_reply(client, token, simulated["conversation_id"])
+
+    text = reply["suggested_text"].lower()
+    assert reply["answer_supported"] is True
+    assert reply["source_document_ids"] == [document["id"]]
+    assert "changing the guest count from 150 to 180" in text
+    assert "may affect the final invoice" in text
+    assert "pearl ballroom package supports up to 180 guests" in text
+    assert "updated package, capacity, and final invoice" in text
+    assert "choose the best option" not in text
+    assert "7,200 a member" not in text
+    assert "7,200" not in text
+    assert "our a member" not in text
+    assert reply["suggested_text"].rstrip().endswith(".")
+
+    event = await latest_generated_event(db_session, reply["id"])
+    rag_query = str(event.details["rag_query"]).lower()
+    assert "guest count increased from 150 to 180 guests" in rag_query
+
+
+async def test_standalone_pricing_request_still_returns_package_pricing(
+    client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr("app.services.suggested_reply_service.get_llm_client", lambda: None)
+    token = await login(client)
+    document = await create_document(
+        client,
+        token,
+        title="Pricing Packages",
+        document_type="pricing",
+        content_text=(
+            "ELEGANT WEDDINGS - PRICING PACKAGES "
+            "1. CLASSIC PACKAGE - $3,500 Includes: Venue setup. "
+            "Guest count limit: Up to 80 guests. "
+            "2. PREMIUM PACKAGE - $6,800 Includes: Full venue decoration. "
+            "Guest count limit: Up to 150 guests."
+        ),
+    )
+    simulated = await create_simulator_message(
+        client,
+        token,
+        body="What are your prices?",
+    )
+
+    reply = await generate_reply(client, token, simulated["conversation_id"])
+
+    text = reply["suggested_text"].lower()
+    assert reply["answer_supported"] is True
+    assert reply["source_document_ids"] == [document["id"]]
+    assert "classic package" in text
+    assert "$3,500" in reply["suggested_text"]
+    assert "premium package" in text
+    assert "choose the best option" in text
+    assert "guest count increased" not in text
+
+
 async def test_llm_disabled_uses_template_fallback(
     client: AsyncClient,
     db_session: AsyncSession,
@@ -845,6 +1229,43 @@ async def test_llm_error_pricing_fallback_lists_all_packages(
     event = await latest_generated_event(db_session, reply["id"])
     assert event.details["generation_method"] == "template_v1"
     assert event.details["llm_fallback_reason"] == "llm_error:TimeoutError"
+
+
+async def test_pricing_llm_reply_does_not_duplicate_generic_endings(
+    client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    fake = FakeLLMClient(
+        "Thank you for your interest in our wedding packages! "
+        "The Classic Package starts at $3,500 for up to 80 guests. "
+        "We would be happy to help you choose the best option. "
+        "A member of our team can help you choose the best option based on your event needs."
+    )
+    monkeypatch.setattr("app.services.suggested_reply_service.get_llm_client", lambda: fake)
+    token = await login(client)
+    await create_document(
+        client,
+        token,
+        title="Pricing Packages",
+        document_type="pricing",
+        content_text=(
+            "ELEGANT WEDDINGS - PRICING PACKAGES "
+            "1. CLASSIC PACKAGE - $3,500 Includes: Venue setup. "
+            "Guest count limit: Up to 80 guests."
+        ),
+    )
+    simulated = await create_simulator_message(
+        client, token, body="I want to ask about your wedding packages."
+    )
+
+    reply = await generate_reply(client, token, simulated["conversation_id"])
+
+    text = reply["suggested_text"].lower()
+    assert reply["generation_method"] == "llm_v1"
+    assert "classic package starts at $3,500" in text
+    assert text.count("choose the best option") == 1
+    assert "we would be happy to help you choose" not in text
+    assert len(fake.requests) == 1
 
 
 async def test_redis_memory_failure_does_not_break_suggested_reply(
