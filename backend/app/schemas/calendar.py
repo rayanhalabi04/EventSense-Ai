@@ -90,4 +90,6 @@ class CalendarAvailabilityResponse(BaseModel):
     alternatives: list[CalendarAvailabilitySlot] = Field(default_factory=list)
     requested_start_time: datetime | None = None
     requested_end_time: datetime | None = None
+    requested_label: str | None = None
+    reason_label: str | None = None
     timezone: str = "Asia/Beirut"
