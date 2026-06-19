@@ -1,7 +1,7 @@
 import { Link } from 'react-router-dom'
 import { AnimatePresence, m } from 'framer-motion'
 import {
-  ArrowLeft, Send, Sparkles, CheckCircle, XCircle, Clock, CheckCheck, CalendarDays,
+  ArrowLeft, ArrowRight, Send, Sparkles, CheckCircle, XCircle, Clock, CheckCheck, CalendarDays,
 } from 'lucide-react'
 import { RiskBadge, TaskStatusBadge, EscalationStatusBadge } from '../components/ui/Badge'
 import { formatDateTime, formatRelative } from '../utils/date'
@@ -418,7 +418,12 @@ function TasksPanel({ conv }: { conv: ConversationDetail }) {
   return (
     <div className="space-y-2">
       {conv.tasks?.length ? conv.tasks.map((task) => (
-        <div key={task.id} className="p-2.5 bg-surface-warm rounded-lg border border-border">
+        <Link
+          key={task.id}
+          to={`/tasks?taskId=${encodeURIComponent(task.id)}`}
+          className="block p-2.5 bg-surface-warm rounded-lg border border-border cursor-pointer transition-all hover:bg-accent-soft/40 hover:border-accent/40 hover:shadow-sm focus:outline-none focus:ring-2 focus:ring-accent focus:ring-offset-2"
+          aria-label={`View task: ${task.title}`}
+        >
           <div className="flex items-start justify-between gap-2 mb-1">
             <p className="text-xs font-medium text-text-primary leading-snug">{task.title}</p>
             <TaskStatusBadge status={task.status} />
@@ -429,7 +434,10 @@ function TasksPanel({ conv }: { conv: ConversationDetail }) {
               {formatRelative(task.due_at)}
             </p>
           )}
-        </div>
+          <p className="mt-2 inline-flex items-center gap-1 text-[10px] font-medium text-accent">
+            View task <ArrowRight className="w-3 h-3" />
+          </p>
+        </Link>
       )) : (
         <p className="text-xs text-text-muted text-center py-4">No tasks linked to this conversation.</p>
       )}
@@ -441,7 +449,12 @@ function EscalationsPanel({ conv }: { conv: ConversationDetail }) {
   return (
     <div className="space-y-2">
       {conv.escalations?.length ? conv.escalations.map((esc) => (
-        <div key={esc.id} className="p-2.5 bg-surface-warm rounded-lg border border-border">
+        <Link
+          key={esc.id}
+          to={`/escalations?escalationId=${encodeURIComponent(esc.id)}`}
+          className="block p-2.5 bg-surface-warm rounded-lg border border-border cursor-pointer transition-all hover:bg-accent-soft/40 hover:border-accent/40 hover:shadow-sm focus:outline-none focus:ring-2 focus:ring-accent focus:ring-offset-2"
+          aria-label={`View escalation: ${esc.ai_summary || esc.suggested_next_step || 'Escalation'}`}
+        >
           <div className="flex items-start justify-between gap-2 mb-1">
             <p className="text-xs font-medium text-text-primary leading-snug">
               {esc.ai_summary || esc.suggested_next_step || 'Escalation'}
@@ -451,7 +464,10 @@ function EscalationsPanel({ conv }: { conv: ConversationDetail }) {
           {esc.risk_level && (
             <p className="text-[10px] text-text-muted capitalize">{esc.risk_level} risk</p>
           )}
-        </div>
+          <p className="mt-2 inline-flex items-center gap-1 text-[10px] font-medium text-accent">
+            View escalation <ArrowRight className="w-3 h-3" />
+          </p>
+        </Link>
       )) : (
         <p className="text-xs text-text-muted text-center py-4">No escalations for this conversation.</p>
       )}

@@ -1,4 +1,5 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { CalendarDays, CheckCircle } from 'lucide-react'
 import { useTasks, useUpdateTask } from '../hooks/useTasks'
 import { Badge, TaskStatusBadge } from '../components/ui/Badge'
@@ -26,11 +27,24 @@ const STATUS_TABS: { label: string; value: TaskStatus | undefined }[] = [
 ]
 
 export function TasksPage() {
-  const [statusFilter, setStatusFilter] = useState<TaskStatus | undefined>('open')
+  const [searchParams] = useSearchParams()
+  const selectedTaskId = searchParams.get('taskId')
+  const [statusFilter, setStatusFilter] = useState<TaskStatus | undefined>(() => (selectedTaskId ? undefined : 'open'))
   const [calendarDraft, setCalendarDraft] = useState<CalendarEventDraft | null>(null)
+  const selectedTaskRef = useRef<HTMLDivElement | null>(null)
 
   const tasks = useTasks({ status: statusFilter })
   const updateTask = useUpdateTask()
+
+  useEffect(() => {
+    if (selectedTaskId) setStatusFilter(undefined)
+  }, [selectedTaskId])
+
+  useEffect(() => {
+    if (!selectedTaskId || !tasks.data?.some((task) => task.id === selectedTaskId)) return
+    selectedTaskRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    selectedTaskRef.current?.focus({ preventScroll: true })
+  }, [selectedTaskId, tasks.data])
 
   const handleStatusChange = (id: string, status: TaskStatus) => {
     updateTask.mutate({ id, data: { status } })
@@ -87,6 +101,7 @@ export function TasksPage() {
       ) : (
         <div className="space-y-3">
           {tasks.data.map((task) => {
+            const isSelected = selectedTaskId === task.id
             const intent = taskIntent(task)
             const risk = taskRisk(task)
             const originalMessage = extractOriginalMessage(task.description)
@@ -98,7 +113,16 @@ export function TasksPage() {
             ].filter(Boolean)
 
             return (
-              <div key={task.id} className="card p-5 hover:bg-surface-warm transition-colors">
+              <div
+                key={task.id}
+                ref={isSelected ? selectedTaskRef : undefined}
+                tabIndex={isSelected ? -1 : undefined}
+                className={`card p-5 scroll-mt-24 transition-colors focus:outline-none ${
+                  isSelected
+                    ? 'bg-accent-soft/40 border-accent/60 ring-2 ring-accent/40'
+                    : 'hover:bg-surface-warm'
+                }`}
+              >
                 <div className="flex items-start gap-4">
                   <button
                     type="button"
