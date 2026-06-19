@@ -48,7 +48,7 @@ async def rebuild_document_chunks(
     if document.status == DocumentStatus.archived:
         chunk_count = 0
     else:
-        chunk_count = _add_chunks(chunks, document)
+        chunk_count = await _add_chunks(chunks, document)
 
     AuditLogService.record(
         session,
@@ -67,7 +67,7 @@ async def rebuild_document_chunks(
     return chunk_count
 
 
-def _add_chunks(repository: DocumentChunkRepository, document: Document) -> int:
+async def _add_chunks(repository: DocumentChunkRepository, document: Document) -> int:
     rows: list[DocumentChunk] = []
     global_child_index = 0
     for parent_index, parent_text in enumerate(
@@ -75,7 +75,7 @@ def _add_chunks(repository: DocumentChunkRepository, document: Document) -> int:
     ):
         parent_chunk_id = uuid4()
         child_texts = split_text(parent_text, size=CHILD_CHUNK_SIZE, overlap=CHUNK_OVERLAP)
-        embeddings = embedding_service.embed_batch(child_texts)
+        embeddings = await embedding_service.embed_batch_async(child_texts)
         for child_text, embedding in zip(child_texts, embeddings, strict=True):
             rows.append(
                 DocumentChunk(

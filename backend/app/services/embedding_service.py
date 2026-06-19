@@ -15,6 +15,7 @@ The active backend is chosen once at process start from settings. The default
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
 import math
@@ -287,6 +288,15 @@ class EmbeddingService:
 
     def embed_batch(self, texts: list[str]) -> list[list[float]]:
         return self._provider.embed_batch(list(texts))
+
+    async def embed_text_async(self, text: str) -> list[float]:
+        return (await self.embed_batch_async([text]))[0]
+
+    async def embed_batch_async(self, texts: list[str]) -> list[list[float]]:
+        text_list = list(texts)
+        if not self.is_semantic:
+            return self.embed_batch(text_list)
+        return await asyncio.to_thread(self.embed_batch, text_list)
 
 
 def tokenize_for_retrieval(text: str) -> set[str]:

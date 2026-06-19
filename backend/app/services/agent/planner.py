@@ -1,8 +1,7 @@
 """Deterministic planner for the bounded EventSense agent."""
 from __future__ import annotations
 
-import os
-
+from app.core.config import settings
 from app.schemas.agent import RecommendedEscalation, RecommendedTask
 from app.services.agent.tool_types import (
     TOOL_CREATE_FOLLOW_UP_TASK,
@@ -37,7 +36,7 @@ AGENT_TRIGGER_INTENTS = frozenset(
 )
 
 KNOWN_RISK_LEVELS = frozenset({RISK_LEVEL_LOW, RISK_LEVEL_MEDIUM, RISK_LEVEL_HIGH})
-AGENT_MAX_TOOL_CALLS = int(os.getenv("AGENT_MAX_TOOL_CALLS", "4"))
+AGENT_MAX_TOOL_CALLS = settings.agent_max_tool_calls
 
 APPROVED_TOOL_NAMES = frozenset(
     {

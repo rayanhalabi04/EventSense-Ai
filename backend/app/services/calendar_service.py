@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, time, timedelta, timezone
 from uuid import UUID
 from zoneinfo import ZoneInfo
@@ -31,7 +32,7 @@ from app.schemas.calendar import (
     CalendarStatusResponse,
 )
 from app.services.audit_log_service import AuditLogService
-from app.services.google_calendar_service import GoogleCalendarService
+from app.services.google_calendar_service import GoogleCalendarBusyEvent, GoogleCalendarService
 
 
 AUDIT_EVENT_CALENDAR_CONNECTED = "calendar.connected"
@@ -83,7 +84,11 @@ class CalendarService:
     async def handle_google_callback(self, *, code: str, state: str) -> None:
         self._require_enabled()
         tenant_id, user_id = self._decode_state(state)
-        tokens = self.google.exchange_code_for_tokens(code=code, state=state)
+        tokens = await asyncio.to_thread(
+            self.google.exchange_code_for_tokens,
+            code=code,
+            state=state,
+        )
 
         await self.connections.deactivate_active_for_tenant(tenant_id)
         connection = CalendarConnection(
@@ -181,7 +186,8 @@ class CalendarService:
         )
 
         try:
-            result = self.google.create_event(
+            result = await asyncio.to_thread(
+                self.google.create_event,
                 connection=connection,
                 title=payload.title,
                 description=payload.description,
@@ -274,7 +280,7 @@ class CalendarService:
             return response
 
         try:
-            conflicts = self.google.list_events_between(
+            conflicts = await self._list_google_events_between(
                 connection=connection,
                 start_time=requested_start,
                 end_time=requested_end,
@@ -283,7 +289,7 @@ class CalendarService:
             available = len(conflicts) == 0
             alternatives: list[CalendarAvailabilitySlot] = []
             if not available:
-                alternatives = self._find_same_day_alternatives(
+                alternatives = await self._find_same_day_alternatives(
                     connection=connection,
                     requested_start=requested_start,
                     requested_end=requested_end,
@@ -338,7 +344,11 @@ class CalendarService:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="calendar event not found")
         connection = await self.connections.get_active_for_tenant(ctx.tenant_id)
         if connection is not None and event.provider_event_id:
-            self.google.delete_event(connection=connection, provider_event_id=event.provider_event_id)
+            await asyncio.to_thread(
+                self.google.delete_event,
+                connection=connection,
+                provider_event_id=event.provider_event_id,
+            )
         event.sync_status = CalendarEventSyncStatus.deleted
         AuditLogService.record(
             self.session,
@@ -419,7 +429,7 @@ class CalendarService:
         except (JWTError, KeyError, ValueError) as exc:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid oauth state") from exc
 
-    def _find_same_day_alternatives(
+    async def _find_same_day_alternatives(
         self,
         *,
         connection: CalendarConnection,
@@ -430,7 +440,7 @@ class CalendarService:
         duration = requested_end - requested_start
         local_start = requested_start.astimezone(ZoneInfo(timezone_name))
         local_day_end = datetime.combine(local_start.date(), time(23, 59), tzinfo=ZoneInfo(timezone_name))
-        busy_events = self.google.list_events_between(
+        busy_events = await self._list_google_events_between(
             connection=connection,
             start_time=requested_end,
             end_time=local_day_end,
@@ -452,6 +462,22 @@ class CalendarService:
                 )
             candidate_start += timedelta(minutes=30)
         return alternatives
+
+    async def _list_google_events_between(
+        self,
+        *,
+        connection: CalendarConnection,
+        start_time: datetime,
+        end_time: datetime,
+        timezone_name: str,
+    ) -> list[GoogleCalendarBusyEvent]:
+        return await asyncio.to_thread(
+            self.google.list_events_between,
+            connection=connection,
+            start_time=start_time,
+            end_time=end_time,
+            timezone_name=timezone_name,
+        )
 
     def _record_availability_checked(
         self,

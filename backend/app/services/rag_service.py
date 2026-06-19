@@ -147,7 +147,7 @@ async def retrieve(
 
     is_semantic = embedding_service.is_semantic
     try:
-        query_embedding = embedding_service.embed_text(safe_query)
+        query_embedding = await embedding_service.embed_text_async(safe_query)
     except EmbeddingError:
         # Semantic provider went down mid-request. Refuse safely instead of
         # crashing or mixing it with fallback vectors stored on the chunks.

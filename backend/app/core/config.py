@@ -76,6 +76,7 @@ class Settings(BaseSettings):
     # questions score ~0.67-0.73. 0.6 sits in that gap so unsupported questions
     # refuse cleanly while supported ones still match. Tune per embedding model.
     rag_semantic_min_score: float = 0.6
+    agent_max_tool_calls: int = 4
     intent_classifier_artifact_path: str = (
         "app/ml/intent_classifier/artifacts/eventsense_tfidf_logreg_baseline.joblib"
     )

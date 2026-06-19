@@ -7,7 +7,7 @@ import type { RiskLevel, MessageIntent } from '../types'
 
 interface SimResult {
   conversation_id?: string
-  intent?: MessageIntent
+  intent_label?: MessageIntent
   risk_level?: RiskLevel
   message?: string
 }
@@ -32,8 +32,8 @@ const DETECTED_SIGNALS = [
   { label: 'Complaint', color: 'text-danger' },
   { label: 'Payment issue', color: 'text-warning' },
   { label: 'Guest count change', color: 'text-warning' },
-  { label: 'General inquiry', color: 'text-info' },
-  { label: 'Confirmation', color: 'text-success' },
+  { label: 'Booking inquiry', color: 'text-info' },
+  { label: 'Service question', color: 'text-success' },
 ]
 
 type EvaluationState = {
@@ -86,7 +86,7 @@ export function EvaluationPage() {
     dispatch({ type: 'SUBMIT_STARTED' })
     try {
       const res = await api.post('/api/v1/simulator/messages', {
-        content: message,
+        body: message,
         client_name: clientName || 'Demo Client',
       })
       dispatch({ type: 'SUBMIT_SUCCEEDED', payload: res.data as SimResult })
@@ -168,11 +168,11 @@ export function EvaluationPage() {
               >
                 <p className="text-xs font-semibold text-text-primary">Analysis result</p>
                 <div className="grid grid-cols-2 gap-3">
-                  {result.intent && (
+                  {result.intent_label && (
                     <div className="p-3 bg-surface rounded-lg border border-border">
                       <p className="text-[10px] text-text-muted mb-1">Intent</p>
                       <p className="text-sm font-medium text-text-primary capitalize">
-                        {result.intent.replace(/_/g, ' ')}
+                        {result.intent_label.replace(/_/g, ' ')}
                       </p>
                     </div>
                   )}

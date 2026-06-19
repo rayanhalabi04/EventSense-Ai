@@ -917,6 +917,10 @@ def _deposit_refund_summary_from_sources(content: str) -> str:
         r"\bdeposit\b[^.!?]{0,120}\bnon-refundable\b[^.!?]{0,80}\bafter booking confirmation\b",
         normalized,
         flags=re.IGNORECASE,
+    ) or re.search(
+        r"\bafter booking confirmation\b[^.!?]{0,120}\bdeposit\b[^.!?]{0,80}\bnon-refundable\b",
+        normalized,
+        flags=re.IGNORECASE,
     )
     if booking_confirmation:
         return "Our policy says the booking deposit is non-refundable after booking confirmation."

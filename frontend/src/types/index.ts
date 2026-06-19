@@ -33,14 +33,17 @@ export interface Tenant {
 export type ConversationStatus = 'open' | 'resolved' | 'pending' | 'escalated'
 export type RiskLevel = 'low' | 'medium' | 'high' | 'critical'
 export type MessageIntent =
-  | 'cancellation'
-  | 'complaint'
-  | 'payment_issue'
+  | 'booking_inquiry'
+  | 'pricing_request'
+  | 'availability_question'
+  | 'service_question'
+  | 'urgent_change'
   | 'guest_count_change'
-  | 'general_inquiry'
-  | 'confirmation'
-  | 'follow_up'
-  | 'unknown'
+  | 'complaint'
+  | 'cancellation_request'
+  | 'payment_issue'
+  | 'human_escalation'
+  | 'other'
 
 /** Mirrors backend `ConversationRead` (`GET /api/v1/conversations`). */
 export interface Conversation {

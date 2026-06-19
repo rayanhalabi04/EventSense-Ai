@@ -58,7 +58,3 @@ class SimulatorConversationItem(BaseModel):
 class SimulatorConversationsResponse(BaseModel):
     items: list[SimulatorConversationItem]
     total: int
-
-
-SimulatedWhatsAppMessageCreate = SimulatorMessageRequest
-SimulatedWhatsAppMessageRead = SimulatorMessageResponse
