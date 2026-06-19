@@ -530,6 +530,140 @@ async def test_availability_question_suggested_reply_uses_calendar_instead_of_ra
     assert reply["rag_sources"] == []
 
 
+async def test_consultation_availability_examples_preserve_requested_times(
+    client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    force_intent(monkeypatch, "availability_question")
+    token = await login(client)
+    checked_slots = []
+
+    async def fake_check_availability(self, **kwargs):
+        checked_slots.append((kwargs["start_time"], kwargs["end_time"]))
+        return CalendarAvailabilityResponse(
+            available=True,
+            reason="free",
+            conflicting_events_count=0,
+            alternatives=[],
+            requested_start_time=kwargs["start_time"],
+            requested_end_time=kwargs["end_time"],
+            timezone=kwargs["timezone_name"],
+        )
+
+    monkeypatch.setattr(
+        "app.services.suggested_reply_service.CalendarService.check_tenant_availability",
+        fake_check_availability,
+    )
+
+    examples = [
+        ("Is Monday at 12 PM available for a consultation?", 12, 0),
+        ("Can we schedule a wedding consultation next Monday at 12:00 PM?", 12, 0),
+        ("Can we schedule a consultation tomorrow at 4 PM?", 16, 0),
+    ]
+    for body, expected_hour, expected_minute in examples:
+        simulated = await create_simulator_message(client, token, body=body)
+        reply = await generate_reply(client, token, simulated["conversation_id"])
+        text = reply["suggested_text"].lower()
+
+        assert reply["generation_method"] == "calendar_availability_v1"
+        assert reply["answer_supported"] is True
+        assert "works for us" in text
+        assert "guest count" not in text
+        assert "venue/location" not in text
+        assert "package preference" not in text
+        start_time, end_time = checked_slots[-1]
+        assert start_time.hour == expected_hour
+        assert start_time.minute == expected_minute
+        assert end_time > start_time
+
+    assert len(checked_slots) == len(examples)
+
+
+async def test_explicit_consultation_booking_confirmation_gets_review_reply(
+    client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    force_intent(monkeypatch, "other")
+    token = await login(client)
+    simulated = await create_simulator_message(
+        client,
+        token,
+        body="Yes, please book the consultation next Monday at 12:00 PM.",
+    )
+
+    reply = await generate_reply(client, token, simulated["conversation_id"])
+
+    text = reply["suggested_text"].lower()
+    assert reply["generation_method"] == "consultation_booking_confirmation_v1"
+    assert reply["answer_supported"] is False
+    assert "team member will review and confirm" in text
+    assert "monday, june 22 at 12 pm" in text
+    assert "uploaded company documents" not in text
+
+
+async def test_vague_consultation_booking_confirmation_uses_recent_slot(
+    client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    force_intent(monkeypatch, "other")
+    token = await login(client)
+    simulated = await create_simulator_message(client, token, body="Yes, please book it.")
+
+    class FakeMemoryService:
+        async def load_recent(self, *, tenant_id, conversation_id):
+            return [
+                ConversationMemoryMessage(
+                    message_id="previous-message",
+                    direction="inbound",
+                    body="Can we schedule a wedding consultation next Monday at 12:00 PM?",
+                    sent_at="2026-06-19T10:00:00+03:00",
+                ),
+                ConversationMemoryMessage(
+                    message_id=simulated["message_id"],
+                    direction="inbound",
+                    body="Yes, please book it.",
+                    sent_at="2026-06-19T10:01:00+03:00",
+                ),
+            ]
+
+    monkeypatch.setattr(
+        "app.services.suggested_reply_service.ConversationMemoryService",
+        lambda: FakeMemoryService(),
+    )
+
+    reply = await generate_reply(client, token, simulated["conversation_id"])
+
+    text = reply["suggested_text"].lower()
+    assert reply["generation_method"] == "consultation_booking_confirmation_v1"
+    assert "team member will review and confirm" in text
+    assert "monday, june 22 at 12 pm" in text
+
+
+async def test_vague_consultation_booking_confirmation_without_context_asks_for_time(
+    client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    force_intent(monkeypatch, "other")
+    token = await login(client)
+    simulated = await create_simulator_message(client, token, body="Yes, please book it.")
+
+    class FakeMemoryService:
+        async def load_recent(self, *, tenant_id, conversation_id):
+            return []
+
+    monkeypatch.setattr(
+        "app.services.suggested_reply_service.ConversationMemoryService",
+        lambda: FakeMemoryService(),
+    )
+
+    reply = await generate_reply(client, token, simulated["conversation_id"])
+
+    text = reply["suggested_text"].lower()
+    assert reply["generation_method"] == "consultation_booking_confirmation_v1"
+    assert "confirm the preferred date and time" in text
+    assert "uploaded company documents" not in text
+
+
 async def test_busy_availability_question_suggested_reply_offers_alternatives(
     client: AsyncClient,
     monkeypatch: pytest.MonkeyPatch,

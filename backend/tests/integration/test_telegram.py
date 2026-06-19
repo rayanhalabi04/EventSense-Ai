@@ -6,6 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.audit_log import AuditLog
+from app.models.calendar import CalendarEvent
 from app.models.conversation import Conversation
 from app.models.escalation import Escalation
 from app.models.message import Message, MessageDirection
@@ -190,6 +191,10 @@ def install_scoped_fake_memory(monkeypatch: pytest.MonkeyPatch) -> None:
     )
     monkeypatch.setattr(
         "app.services.suggested_reply_service.ConversationMemoryService",
+        ScopedFakeMemoryService,
+    )
+    monkeypatch.setattr(
+        "app.services.automated_task_service.ConversationMemoryService",
         ScopedFakeMemoryService,
     )
 
@@ -1260,6 +1265,20 @@ async def tasks_for_conversation(
     )
 
 
+async def calendar_events_for_conversation(
+    db_session: AsyncSession, conversation_id: UUID
+) -> list[CalendarEvent]:
+    return list(
+        (
+            await db_session.execute(
+                select(CalendarEvent).where(CalendarEvent.related_conversation_id == conversation_id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+
 # --- shared inbound pipeline: escalation + human-review routing ---------------
 
 
@@ -1388,6 +1407,115 @@ async def test_task_worthy_telegram_intents_create_open_follow_up_task(
     assert "Created automatically from an inbound message." in (task.description or "")
     assert f"Detected intent: {label}" in (task.description or "")
     assert text in (task.description or "")
+
+
+async def test_consultation_booking_confirmation_creates_review_task_not_calendar_event(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    enable_auto_reply(monkeypatch)
+    force_intent(monkeypatch, "other", 0.96)
+    fail_on_telegram_send(monkeypatch)
+
+    text = "Yes, please book the consultation next Monday at 12:00 PM."
+    response = await post_telegram_update(
+        client,
+        telegram_update(chat_id=1930, message_id=230, text=text),
+    )
+
+    assert response.status_code == 200
+    conversation_id = UUID(response.json()["conversation_id"])
+    message_id = UUID(response.json()["message_id"])
+
+    tasks = await tasks_for_conversation(db_session, conversation_id)
+    assert len(tasks) == 1
+    task = tasks[0]
+    assert task.status is TaskStatus.open
+    assert task.title == "Approve consultation booking"
+    assert task.message_id == message_id
+    assert task.source_type == "inbound_auto"
+    assert "calendar consultation follow-up" in (task.description or "")
+    assert "Requested date/time: Monday, June 22 at 12 PM" in (task.description or "")
+    assert "Customer confirmation message:" in (task.description or "")
+    assert text in (task.description or "")
+    assert "create the Google Calendar event manually" in (task.description or "")
+    assert await calendar_events_for_conversation(db_session, conversation_id) == []
+
+    suggested = (
+        await db_session.execute(select(SuggestedReply).where(SuggestedReply.message_id == message_id))
+    ).scalar_one()
+    assert suggested.generation_method == "consultation_booking_confirmation_v1"
+    assert "team member will review and confirm" in suggested.suggested_text.lower()
+
+
+async def test_vague_consultation_booking_confirmation_uses_memory_for_review_task(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    install_scoped_fake_memory(monkeypatch)
+    enable_auto_reply(monkeypatch)
+    force_intent(monkeypatch, "other", 0.96)
+    fail_on_telegram_send(monkeypatch)
+
+    first = await post_telegram_update(
+        client,
+        telegram_update(
+            chat_id=1931,
+            message_id=231,
+            text="Can we schedule a wedding consultation next Monday at 12:00 PM?",
+        ),
+    )
+    assert first.status_code == 200
+
+    second = await post_telegram_update(
+        client,
+        telegram_update(chat_id=1931, message_id=232, text="Yes, please book it."),
+    )
+
+    assert second.status_code == 200
+    conversation_id = UUID(second.json()["conversation_id"])
+    message_id = UUID(second.json()["message_id"])
+
+    tasks = await tasks_for_conversation(db_session, conversation_id)
+    assert len(tasks) == 1
+    task = tasks[0]
+    assert task.title == "Approve consultation booking"
+    assert task.message_id == message_id
+    assert "Requested date/time: Monday, June 22 at 12 PM" in (task.description or "")
+
+    suggested = (
+        await db_session.execute(select(SuggestedReply).where(SuggestedReply.message_id == message_id))
+    ).scalar_one()
+    assert suggested.generation_method == "consultation_booking_confirmation_v1"
+    assert "monday, june 22 at 12 pm" in suggested.suggested_text.lower()
+
+
+async def test_vague_consultation_booking_confirmation_without_context_asks_for_time(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    enable_auto_reply(monkeypatch)
+    force_intent(monkeypatch, "other", 0.96)
+    fail_on_telegram_send(monkeypatch)
+
+    response = await post_telegram_update(
+        client,
+        telegram_update(chat_id=1932, message_id=233, text="Yes, please book it."),
+    )
+
+    assert response.status_code == 200
+    conversation_id = UUID(response.json()["conversation_id"])
+    message_id = UUID(response.json()["message_id"])
+
+    assert await tasks_for_conversation(db_session, conversation_id) == []
+    suggested = (
+        await db_session.execute(select(SuggestedReply).where(SuggestedReply.message_id == message_id))
+    ).scalar_one()
+    assert suggested.generation_method == "consultation_booking_confirmation_v1"
+    assert "confirm the preferred date and time" in suggested.suggested_text.lower()
 
 
 async def test_high_risk_complaint_does_not_auto_send_and_creates_escalation(

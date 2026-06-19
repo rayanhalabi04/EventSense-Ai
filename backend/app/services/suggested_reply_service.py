@@ -27,7 +27,9 @@ from app.repositories.suggested_reply_repository import SuggestedReplyRepository
 from app.repositories.tenant_repository import TenantRepository
 from app.services.calendar_availability_parser import (
     is_availability_question,
+    parse_consultation_booking_confirmation,
     parse_availability_request,
+    recent_consultation_slot_from_memory,
 )
 from app.services.calendar_service import CalendarService
 from app.services.audit_log_service import (
@@ -65,6 +67,7 @@ from app.services.rag_service import RagResult, retrieve
 GENERATION_METHOD_TEMPLATE = "template_v1"
 GENERATION_METHOD_LLM = "llm_v1"
 GENERATION_METHOD_CALENDAR_AVAILABILITY = "calendar_availability_v1"
+GENERATION_METHOD_CONSULTATION_BOOKING_CONFIRMATION = "consultation_booking_confirmation_v1"
 GENERATION_METHOD_SMALL_TALK_PREFIX = "small_talk_"
 GENERATION_METHOD_SMALL_TALK_SUFFIX = "_v1"
 SMALL_TALK_LLM_CATEGORY = "llm_safe_casual"
@@ -128,6 +131,8 @@ GUEST_COUNT_REVIEW_REFUSAL_REASON = "Guest count/capacity changes require staff 
 HIGH_RISK_REVIEW_REFUSAL_REASON = "High-risk complaint or human escalation requires staff review."
 AVAILABILITY_PARSE_REFUSAL_REASON = "Availability request needs a specific date and time."
 AVAILABILITY_MANUAL_REVIEW_REASON = "Calendar availability requires staff review."
+CONSULTATION_BOOKING_REVIEW_REASON = "Consultation booking requires staff approval."
+CONSULTATION_BOOKING_NEEDS_TIME_REASON = "Consultation booking confirmation needs a date and time."
 SMALL_TALK_CONTEXTUAL_MEETING_REPLY = (
     "You're welcome. We look forward to speaking with you then."
 )
@@ -1459,6 +1464,65 @@ async def _generate_calendar_availability_reply(
     )
 
 
+async def _generate_consultation_booking_confirmation_reply(
+    *,
+    tenant_id: UUID,
+    conversation_id: UUID,
+    message: Message,
+    message_body: str,
+) -> GeneratedReply:
+    parsed = parse_consultation_booking_confirmation(
+        message_body,
+        reference_time=message.sent_at,
+    )
+    if not parsed.is_confirmation:
+        raise ValueError("message is not a consultation booking confirmation")
+
+    start_time = parsed.start_time
+    end_time = parsed.end_time
+    if not parsed.has_exact_time:
+        memory_messages = await ConversationMemoryService().load_recent(
+            tenant_id=tenant_id,
+            conversation_id=conversation_id,
+        )
+        recent_slot = recent_consultation_slot_from_memory(
+            memory_messages,
+            current_message_id=str(message.id),
+            reference_time=message.sent_at,
+            timezone_name=parsed.timezone,
+        )
+        if recent_slot is not None:
+            start_time = recent_slot.start_time
+            end_time = recent_slot.end_time
+
+    if start_time is None or end_time is None:
+        text = (
+            "Thank you. Could you confirm the preferred date and time for the "
+            "consultation so a team member can review the booking?"
+        )
+        return GeneratedReply(
+            suggested_text=text,
+            answer_supported=False,
+            refusal_reason=CONSULTATION_BOOKING_NEEDS_TIME_REASON,
+            source_document_ids=[],
+            rag_sources=[],
+            generation_method=GENERATION_METHOD_CONSULTATION_BOOKING_CONFIRMATION,
+        )
+
+    requested_time = _format_requested_slot(start_time, end_time)
+    return GeneratedReply(
+        suggested_text=(
+            f"Thank you. A team member will review and confirm your consultation "
+            f"booking for {requested_time} shortly."
+        ),
+        answer_supported=False,
+        refusal_reason=CONSULTATION_BOOKING_REVIEW_REASON,
+        source_document_ids=[],
+        rag_sources=[],
+        generation_method=GENERATION_METHOD_CONSULTATION_BOOKING_CONFIRMATION,
+    )
+
+
 def _no_exact_time_availability_reply(message_body: str) -> str:
     date_phrase = _availability_date_phrase(message_body)
     if _explicit_meeting_request(message_body):
@@ -1505,7 +1569,7 @@ def _clean_date_phrase(value: str) -> str:
 def _explicit_meeting_request(message_body: str) -> bool:
     normalized = message_body.lower()
     return bool(
-        re.search(r"\b(?:meeting|call|appointment)\b", normalized)
+        re.search(r"\b(?:meeting|call|appointment|consultation|consult)\b", normalized)
         or re.search(r"\bmeet\b", normalized)
     )
 
@@ -1849,6 +1913,16 @@ async def generate_suggested_reply(
             source_document_ids=[],
             rag_sources=[],
             generation_method=GENERATION_METHOD_TEMPLATE,
+        )
+    elif parse_consultation_booking_confirmation(
+        message_body,
+        reference_time=message.sent_at,
+    ).is_confirmation:
+        generated = await _generate_consultation_booking_confirmation_reply(
+            tenant_id=tenant_id,
+            conversation_id=conversation.id,
+            message=message,
+            message_body=message_body,
         )
     elif small_talk_category is not None:
         generated = await _build_small_talk_reply(
